@@ -29,6 +29,12 @@ jobs:
         with:
           cache: true
 
+      - name: Format, lint and typecheck
+        run: vp check
+
+      - name: Test
+        run: vp test
+
       - name: Build package
         run: vp pack
 

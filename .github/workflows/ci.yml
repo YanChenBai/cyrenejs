@@ -26,7 +26,7 @@ jobs:
           cache: true
 
       - name: Format, lint and typecheck
-        run: vp run check
+        run: vp check
 
       - name: Test
-        run: vp run test
+        run: vp test

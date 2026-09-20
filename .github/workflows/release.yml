@@ -26,10 +26,10 @@ jobs:
         uses: voidzero-dev/setup-vp@v1.19.0
 
       - name: Check
-        run: vp run check
+        run: vp check
 
       - name: Test
-        run: vp run test
+        run: vp test
 
       - name: Build
         run: vp pack

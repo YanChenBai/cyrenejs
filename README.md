@@ -5,10 +5,10 @@
 </p>
 
 <p align="center">
-  [<a href="#quick-start">快速开始</a>]
-  [<a href="#features">能力一览</a>]
-  [<a href="./docs/CYRENE_DESIGN.md">设计文档</a>]
-  [<a href="#development">参与开发</a>]
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#features">能力一览</a> ·
+  <a href="./docs/CYRENE_DESIGN.md">设计文档</a> ·
+  <a href="#development">参与开发</a>
 </p>
 
 <p align="center">
@@ -131,4 +131,4 @@ vp run ready
 | `vp pack`      | 构建 ESM 与类型声明    |
 | `vp run ready` | 依次执行以上检查与构建 |
 
-欢迎从 [设计文档](./docs/CYRENE_DESIGN.md) 和 [测试用例](./tests/cyrene.test.ts) 了解行为边界
+欢迎从 [设计文档](./docs/CYRENE_DESIGN.md) 和 [测试用例](./tests/) 了解行为边界

@@ -10,6 +10,16 @@
     "resource-management",
     "typescript"
   ],
+  "homepage": "https://github.com/YanChenBai/cyrenejs#readme",
+  "bugs": {
+    "url": "https://github.com/YanChenBai/cyrenejs/issues"
+  },
+  "license": "MIT",
+  "author": "byc <bycrxemail@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YanChenBai/cyrenejs"
+  },
   "files": [
     "dist",
     "README.md"

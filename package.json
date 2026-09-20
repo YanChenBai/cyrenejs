@@ -25,10 +25,14 @@
     }
   },
   "scripts": {
-    "ready": "vp check && vp test run && vp pack"
+    "prepare": "vp config",
+    "prepublishOnly": "vp pack",
+    "ready": "vp check && vp test run && vp pack",
+    "release": "vp check && vp test && changelogen --release"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "catalog:",
+    "changelogen": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },

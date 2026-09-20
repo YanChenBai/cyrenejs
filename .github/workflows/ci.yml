@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1.19.0
+        with:
+          cache: true
+
+      - name: Format, lint and typecheck
+        run: vp run check
+
+      - name: Test
+        run: vp run test

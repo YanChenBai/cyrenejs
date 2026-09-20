@@ -1,0 +1,49 @@
+name: Release
+
+permissions:
+  contents: write
+  id-token: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1.19.0
+
+      - name: Check
+        run: vp run check
+
+      - name: Test
+        run: vp run test
+
+      - name: Build
+        run: vp pack
+
+      - name: Publish to npm
+        run: vp pm publish --access public --provenance --no-git-checks
+
+      - name: Publish GitHub Release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes "For details, please refer to [CHANGELOG.md](https://github.com/${GH_REPO}/blob/master/CHANGELOG.md)."

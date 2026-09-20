@@ -1,0 +1,44 @@
+{
+  "name": "cyrenejs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A declarative, type-safe dependency graph runtime for TypeScript with async initialization and resource disposal",
+  "keywords": [
+    "async-initialization",
+    "dependency-graph",
+    "dependency-injection",
+    "lifecycle",
+    "resource-management",
+    "typescript"
+  ],
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "ready": "vp check && vp test run && vp pack"
+  },
+  "devDependencies": {
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.4.2",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

@@ -13,6 +13,7 @@ export default defineConfig({
     arrowParens: 'avoid',
     embeddedLanguageFormatting: 'auto',
     printWidth: 100,
+    ignorePatterns: ['CHANGELOG.md'],
   },
 
   lint: {
@@ -96,6 +97,7 @@ export default defineConfig({
       typeAware: true,
       typeCheck: true,
     },
+    ignorePatterns: ['CHANGELOG.md'],
   },
 
   pack: {

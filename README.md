@@ -7,7 +7,7 @@
 <p align="center">
   [<a href="#quick-start">快速开始</a>]
   [<a href="#features">能力一览</a>]
-  [<a href="./CYRENE_DESIGN.md">设计文档</a>]
+  [<a href="./docs/CYRENE_DESIGN.md">设计文档</a>]
   [<a href="#development">参与开发</a>]
 </p>
 
@@ -26,15 +26,20 @@
 
 一个 `Cyrene` 就是一个独立运行作用域, 构造时声明入口和外部能力, 然后启动它
 
-> [!NOTE]
-> 当前仓库配置为 private, 示例以本地构建为准
-> 可以先在本仓库构建并运行示例, API 约定见 [设计文档](./CYRENE_DESIGN.md)
-
 <a id="quick-start"></a>
 
 ## 🌱 快速开始
 
-在本仓库执行 `vp install` 和 `vp pack`, 即可通过包入口 `cyrenejs` 使用构建结果
+安装公开包 `cyrenejs`:
+
+```sh
+npm install cyrenejs
+```
+
+也可以使用 `pnpm add cyrenejs` 或 `vp add cyrenejs`
+
+需要 Node.js 22.18.0 及以上, 包提供 ESM 入口和 TypeScript 类型声明
+下面的 TypeScript 示例使用 `await using`, 请通过支持该语法的 TypeScript 工具链编译运行; 也可以使用 `try/finally` 配合 `await app.dispose()` 显式释放资源
 
 ```ts
 import { Cyrene, ripple, token } from 'cyrenejs';
@@ -126,4 +131,4 @@ vp run ready
 | `vp pack`      | 构建 ESM 与类型声明    |
 | `vp run ready` | 依次执行以上检查与构建 |
 
-欢迎从 [设计文档](./CYRENE_DESIGN.md) 和 [测试用例](./tests/cyrene.test.ts) 了解行为边界
+欢迎从 [设计文档](./docs/CYRENE_DESIGN.md) 和 [测试用例](./tests/cyrene.test.ts) 了解行为边界

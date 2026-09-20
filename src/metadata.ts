@@ -25,7 +25,11 @@ export function setDefinition(target: object, definition: Definition): void {
 
 export function getDefinition(target: object): Definition {
   const definition = definitions.get(target);
-  if (!definition) throw new InvalidDependencyError('Unknown dependency definition');
+
+  if (!definition) {
+    throw new InvalidDependencyError('Unknown dependency definition');
+  }
+
   return definition;
 }
 
@@ -35,7 +39,11 @@ export function setLazyTarget(target: object, getTarget: () => Resolvable): void
 
 export function getLazyTarget(target: object): Resolvable {
   const getTarget = lazyTargets.get(target);
-  if (!getTarget) throw new InvalidDependencyError('Unknown lazy reference');
+
+  if (!getTarget) {
+    throw new InvalidDependencyError('Unknown lazy reference');
+  }
+
   const value = getTarget();
   assertResolvable(value);
   return value;
@@ -66,11 +74,16 @@ export function assertResolvable(value: unknown): asserts value is Resolvable {
     getDefinition(value);
     return;
   }
+
   if (isRef(value) && isDependency(value.dependency) && Array.isArray(value.params)) {
     getDefinition(value.dependency);
     return;
   }
-  if (isToken(value) && typeof value.name === 'string') return;
+
+  if (isToken(value) && typeof value.name === 'string') {
+    return;
+  }
+
   throw new InvalidDependencyError('Expected a Dependency, DependencyRef or Token');
 }
 
@@ -82,7 +95,10 @@ export function entries(value: object): [PropertyKey, unknown][] {
 }
 
 export function targetName(target: Resolvable | DependencyIdentity): string {
-  if (isToken(target)) return target.name;
+  if (isToken(target)) {
+    return target.name;
+  }
+
   const definition = getDefinition(isRef(target) ? target.dependency : target);
   return `${definition.options.debugName ?? 'Dependency'}${isRef(target) ? '(ref)' : ''}`;
 }

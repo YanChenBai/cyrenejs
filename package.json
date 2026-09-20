@@ -1,7 +1,6 @@
 {
   "name": "cyrenejs",
   "version": "0.0.0",
-  "private": true,
   "description": "A declarative, type-safe dependency graph runtime for TypeScript with async initialization and resource disposal",
   "keywords": [
     "async-initialization",
@@ -12,7 +11,8 @@
     "typescript"
   ],
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "type": "module",
   "sideEffects": false,
@@ -28,6 +28,7 @@
     "ready": "vp check && vp test run && vp pack"
   },
   "devDependencies": {
+    "@stylistic/eslint-plugin": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },

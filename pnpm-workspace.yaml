@@ -1,6 +1,7 @@
 catalogMode: prefer
 
 catalog:
+  '@stylistic/eslint-plugin': ^5.10.0
   '@types/node': ^24
   typescript: ^7.0.2
   vite: npm:@voidzero-dev/vite-plus-core@0.3.2

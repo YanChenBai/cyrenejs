@@ -41,11 +41,19 @@ interface Instance {
 async function settle<T>(promises: readonly Promise<T>[]): Promise<T[]> {
   // 某个分支失败后仍等待其他分支结束, 避免遗漏稍后创建的资源
   const results = await Promise.allSettled(promises);
+
   const errors = results
     .filter(result => result.status === 'rejected')
     .map(result => result.reason);
-  if (errors.length === 1) throw errors[0];
-  if (errors.length > 1) throw new AggregateError(errors, 'Multiple dependencies failed');
+
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+
+  if (errors.length > 1) {
+    throw new AggregateError(errors, 'Multiple dependencies failed');
+  }
+
   return results.map(result => (result as PromiseFulfilledResult<T>).value);
 }
 
@@ -64,26 +72,42 @@ export class Cyrene<
 
   constructor(options: CyreneOptions<TProviders, TBindings> = {}) {
     this.#providers = Object.freeze({ ...options.providers }) as Readonly<TProviders>;
-    for (const target of Object.values(this.#providers)) assertResolvable(target);
+
+    for (const target of Object.values(this.#providers)) {
+      assertResolvable(target);
+    }
+
     for (const binding of options.bindings ?? []) {
-      if (!isToken(binding.token)) throw new InvalidDependencyError('Binding requires a Token');
+      if (!isToken(binding.token)) {
+        throw new InvalidDependencyError('Binding requires a Token');
+      }
+
       if (Object.hasOwn(binding, 'value') === Object.hasOwn(binding, 'dependency')) {
         throw new InvalidDependencyError(
           `Binding ${binding.token.name} requires exactly one of value or dependency`,
         );
       }
+
       if (this.#bindings.has(binding.token)) {
         throw new InvalidDependencyError(`Duplicate binding: ${binding.token.name}`);
       }
-      if ('dependency' in binding) assertResolvable(binding.dependency);
+
+      if ('dependency' in binding) {
+        assertResolvable(binding.dependency);
+      }
+
       this.#bindings.set(binding.token, Object.freeze({ ...binding }));
     }
   }
 
   start(): Promise<ResolveEntries<TProviders>> {
-    if (this.#state !== 'active')
+    if (this.#state !== 'active') {
       return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
-    if (this.#startup) return this.#startup;
+    }
+
+    if (this.#startup) {
+      return this.#startup;
+    }
 
     this.#startup = this.#track(
       Promise.resolve().then(async () => {
@@ -93,9 +117,11 @@ export class Cyrene<
           providers.map(([, target]) => target),
           this.#bindings,
         );
+
         const values = await settle(
           providers.map(([, target]) => this.#resolveTarget(target, undefined, [])),
         );
+
         return Object.fromEntries(
           providers.map(([name], index) => [name, values[index]]),
         ) as ResolveEntries<TProviders>;
@@ -105,8 +131,10 @@ export class Cyrene<
   }
 
   resolve<T>(target: Resolvable<T>): Promise<T> {
-    if (this.#state !== 'active')
+    if (this.#state !== 'active') {
       return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
+    }
+
     return this.#track(
       Promise.resolve().then(() => {
         inspectGraph([target], this.#bindings);
@@ -128,7 +156,10 @@ export class Cyrene<
   }
 
   dispose(): Promise<void> {
-    if (this.#disposal) return this.#disposal;
+    if (this.#disposal) {
+      return this.#disposal;
+    }
+
     // 同步关闭新解析入口, 清理过程等待已经接收的任务结束
     this.#state = 'disposing';
     this.#disposal = Promise.resolve().then(() => this.#dispose());
@@ -140,7 +171,9 @@ export class Cyrene<
   }
 
   #assertActive(): void {
-    if (this.#state !== 'active') throw new DisposedError('Cyrene is disposing or disposed');
+    if (this.#state !== 'active') {
+      throw new DisposedError('Cyrene is disposing or disposed');
+    }
   }
 
   #track<T>(promise: Promise<T>): Promise<T> {
@@ -158,33 +191,28 @@ export class Cyrene<
     path: readonly string[],
   ): Promise<unknown> {
     assertResolvable(target);
+
     if (isToken(target)) {
       const binding = getBinding(this.#bindings, target, path);
+
       if ('dependency' in binding) {
         assertResolvable(binding.dependency);
         return this.#resolveTarget(binding.dependency, owner, [...path, target.name]);
       }
+
       // 外部值不进入实例持有集合, 生命周期仍由提供方管理
       return binding.value;
     }
 
     const definition = getDefinition(isRef(target) ? target.dependency : target);
     const isSingleton = definition.options.lifetime !== 'transient';
+
     if (!isSingleton && owner) {
-      // transient 没有缓存, 按正在等待的实例链检测重复身份, 避免 lazy 环无限创建实例
-      for (const pending of this.#instances) {
-        if (
-          pending.target === target &&
-          pending.state === 'initializing' &&
-          this.#reaches(pending, owner, new Set())
-        ) {
-          throw new CircularDependencyError(
-            `Circular initialization: ${[...path, targetName(target)].join(' -> ')}`,
-          );
-        }
-      }
+      this.#assertNoTransientCycle(target, owner, path);
     }
+
     let instance = isSingleton ? this.#cache.get(target) : undefined;
+
     if (!instance) {
       instance = {
         target,
@@ -194,21 +222,29 @@ export class Cyrene<
         state: 'initializing',
       };
       const created = instance;
+
       // 先记录状态, 再在微任务中执行工厂, 保证并发解析共享同一次初始化
-      if (isSingleton) this.#cache.set(target, created);
+      if (isSingleton) {
+        this.#cache.set(target, created);
+      }
+
       this.#instances.add(created);
       const nextPath = [...path, targetName(target)];
       created.promise = this.#track(
         Promise.resolve().then(async () => {
           try {
             const inputs = entries(definition.inputs);
+
             const values = await settle(
               inputs.map(([, input]) => this.#resolveInput(input, created, nextPath)),
             );
+
             const dependencies = Object.fromEntries(
               inputs.map(([key], index) => [key, values[index]!.value]),
             );
+
             const value = await definition.invoke(dependencies, isRef(target) ? target.params : []);
+
             created.value = value;
             created.dispose = this.#getDisposer(value, definition.options.dispose);
             created.state = 'ready';
@@ -216,31 +252,58 @@ export class Cyrene<
           } catch (cause) {
             created.state = 'failed';
             this.#instances.delete(created);
+
             // 只移除失败实例的缓存, 不重置 start 已记录的失败结果
-            if (isSingleton) this.#cache.delete(target);
-            if (cause instanceof ResolutionError || cause instanceof CircularDependencyError)
+            if (isSingleton) {
+              this.#cache.delete(target);
+            }
+
+            if (cause instanceof ResolutionError || cause instanceof CircularDependencyError) {
               throw cause;
+            }
+
             throw new ResolutionError(nextPath, cause);
           }
         }),
       );
     }
 
-    if (!owner) return instance.promise;
+    if (!owner) {
+      return instance.promise;
+    }
+
     // 延迟依赖激活后也记录资源关系, 释放顺序不能只依赖创建时间
     owner.dependencies.add(instance);
+
     if (instance.state === 'initializing') {
       if (this.#reaches(instance, owner, new Set())) {
         throw new CircularDependencyError(
           `Circular initialization: ${[...path, targetName(target)].join(' -> ')}`,
         );
       }
+
       owner.waitingFor.add(instance);
     }
+
     try {
       return await instance.promise;
     } finally {
       owner.waitingFor.delete(instance);
+    }
+  }
+
+  #assertNoTransientCycle(target: Resolvable, owner: Instance, path: readonly string[]): void {
+    // transient 没有缓存, 按正在等待的实例链检测重复身份, 避免 lazy 环无限创建实例
+    for (const pending of this.#instances) {
+      if (
+        pending.target === target &&
+        pending.state === 'initializing' &&
+        this.#reaches(pending, owner, new Set())
+      ) {
+        throw new CircularDependencyError(
+          `Circular initialization: ${[...path, targetName(target)].join(' -> ')}`,
+        );
+      }
     }
   }
 
@@ -254,8 +317,10 @@ export class Cyrene<
       return {
         value: Object.freeze({
           resolve: () => {
-            if (this.#state !== 'active')
+            if (this.#state !== 'active') {
               return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
+            }
+
             return this.#track(
               Promise.resolve().then(() => {
                 inspectGraph([target], this.#bindings);
@@ -270,17 +335,25 @@ export class Cyrene<
         }),
       };
     }
+
     if (isDependency(input) || isRef(input) || isToken(input)) {
       assertResolvable(input);
       return { value: await this.#resolveTarget(input, owner, path) };
     }
+
     // 包装普通值, 避免 async 返回时自动展开作为输入传入的 Promise
     return { value: input };
   }
 
   #reaches(instance: Instance, target: Instance, visited: Set<Instance>): boolean {
-    if (instance === target) return true;
-    if (visited.has(instance)) return false;
+    if (instance === target) {
+      return true;
+    }
+
+    if (visited.has(instance)) {
+      return false;
+    }
+
     visited.add(instance);
     return [...instance.waitingFor].some(child => this.#reaches(child, target, visited));
   }
@@ -289,36 +362,67 @@ export class Cyrene<
     value: unknown,
     dispose?: (value: unknown) => void | Promise<void>,
   ): (() => void | Promise<void>) | undefined {
-    if (dispose) return () => dispose(value);
-    if (!isObject(value)) return undefined;
+    if (dispose) {
+      return () => dispose(value);
+    }
+
+    if (!isObject(value)) {
+      return undefined;
+    }
+
     const method = Reflect.get(value, Symbol.asyncDispose) ?? Reflect.get(value, Symbol.dispose);
-    if (typeof method === 'function') return () => method.call(value);
+
+    if (typeof method === 'function') {
+      return () => method.call(value);
+    }
+
     return undefined;
   }
 
   async #dispose(): Promise<void> {
     // 已接收的任务仍可能创建间接依赖, 持续等待直到没有在途任务
-    while (this.#pending.size) await Promise.allSettled(this.#pending);
+    while (this.#pending.size) {
+      await Promise.allSettled(this.#pending);
+    }
 
     const visited = new Set<Instance>();
     const order: Instance[] = [];
+
     const visit = (instance: Instance) => {
-      if (visited.has(instance)) return;
+      if (visited.has(instance)) {
+        return;
+      }
+
       visited.add(instance);
-      for (const dependency of instance.dependencies) visit(dependency);
+
+      for (const dependency of instance.dependencies) {
+        visit(dependency);
+      }
+
       order.push(instance);
     };
-    for (const instance of this.#instances) visit(instance);
+
+    for (const instance of this.#instances) {
+      visit(instance);
+    }
 
     const disposed = new Set<object>();
     const errors: unknown[] = [];
+
     // 后序遍历反转后先释放消费者, visited 同时避免延迟资源环重复遍历
     for (const instance of order.reverse()) {
-      if (instance.state !== 'ready' || !instance.dispose) continue;
+      if (instance.state !== 'ready' || !instance.dispose) {
+        continue;
+      }
+
       if (isObject(instance.value)) {
-        if (disposed.has(instance.value)) continue;
+        if (disposed.has(instance.value)) {
+          continue;
+        }
+
         disposed.add(instance.value);
       }
+
       try {
         await instance.dispose();
       } catch (error) {
@@ -333,12 +437,16 @@ export class Cyrene<
       instance.dispose = undefined;
       instance.promise = Promise.resolve();
     }
+
     this.#providers = Object.freeze({}) as Readonly<TProviders>;
     this.#cache.clear();
     this.#instances.clear();
     this.#bindings.clear();
     this.#startup = undefined;
     this.#state = 'disposed';
-    if (errors.length) throw new AggregateError(errors, 'Failed to dispose Cyrene resources');
+
+    if (errors.length) {
+      throw new AggregateError(errors, 'Failed to dispose Cyrene resources');
+    }
   }
 }

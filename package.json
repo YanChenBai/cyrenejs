@@ -1,6 +1,6 @@
 {
   "name": "cyrenejs",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A declarative, type-safe dependency graph runtime for TypeScript with async initialization and resource disposal",
   "keywords": [
     "async-initialization",

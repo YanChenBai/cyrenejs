@@ -1,6 +1,18 @@
 # Changelog
 
 
+## v0.0.3
+
+[compare changes](https://github.com/YanChenBai/cyrenejs/compare/v0.0.2...v0.0.3)
+
+### 🩹 Fixes
+
+- Prevent private ripple brand from leaking into declarations ([8cea2be](https://github.com/YanChenBai/cyrenejs/commit/8cea2be))
+
+### ❤️ Contributors
+
+- Byc ([@YanChenBai](https://github.com/YanChenBai))
+
 ## v0.0.2
 
 [compare changes](https://github.com/YanChenBai/cyrenejs/compare/v0.0.1...v0.0.2)

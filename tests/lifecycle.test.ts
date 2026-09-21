@@ -30,7 +30,7 @@ describe('延迟解析与资源释放', () => {
     });
 
     const b: Dependency<B> = ripple({ a }, factory, { dispose: disposeB });
-    const app = new Cyrene({ providers: { a } });
+    const app = new Cyrene({ ripples: { a } });
     const result = await app.start();
     expect(factory).not.toHaveBeenCalled();
     const instanceB = await result.a.b.resolve();
@@ -52,7 +52,7 @@ describe('延迟解析与资源释放', () => {
       a.resolve(),
     );
 
-    const app = new Cyrene({ providers: { a, b } });
+    const app = new Cyrene({ ripples: { a, b } });
     await expect(app.start()).rejects.toBeInstanceOf(AggregateError);
     await app.dispose();
   });
@@ -70,7 +70,7 @@ describe('延迟解析与资源释放', () => {
       lifetime: 'transient',
     });
 
-    const app = new Cyrene({ providers: { a } });
+    const app = new Cyrene({ ripples: { a } });
     await expect(app.start()).rejects.toBeInstanceOf(CircularDependencyError);
     await app.dispose();
   });
@@ -79,7 +79,7 @@ describe('延迟解析与资源释放', () => {
     const missing = token<number>('Missing');
     const factory = vi.fn(() => 1);
     const root = ripple({ later: lazy(() => missing) }, factory);
-    const app = new Cyrene({ providers: { root } });
+    const app = new Cyrene({ ripples: { root } });
     await expect(app.start()).rejects.toBeInstanceOf(MissingBindingError);
     expect(factory).not.toHaveBeenCalled();
     await app.dispose();
@@ -120,7 +120,7 @@ describe('延迟解析与资源释放', () => {
     const service = ripple({}, () => ({}), { lifetime: 'transient', dispose });
 
     {
-      await using app = new Cyrene({ providers: { service } });
+      await using app = new Cyrene({ ripples: { service } });
       await app.start();
       await app.resolve(service);
     }
@@ -134,7 +134,7 @@ describe('延迟解析与资源释放', () => {
     );
 
     const b: Dependency<number> = ripple({ a }, ({ a }): number => a);
-    const app = new Cyrene({ providers: { a } });
+    const app = new Cyrene({ ripples: { a } });
     await expect(app.start()).rejects.toBeInstanceOf(CircularDependencyError);
     await app.dispose();
   });
@@ -163,7 +163,7 @@ describe('延迟解析与资源释放', () => {
       },
     });
 
-    const app = new Cyrene({ providers: { service } });
+    const app = new Cyrene({ ripples: { service } });
     const startup = app.start();
     await entered.promise;
     const disposal = app.dispose();
@@ -221,7 +221,7 @@ describe('延迟解析与资源释放', () => {
     });
 
     const app = new Cyrene({
-      providers: { broken },
+      ripples: { broken },
       bindings: [{ token: External, value: { [Symbol.dispose]: externalDispose } }],
     });
 
@@ -245,7 +245,7 @@ describe('延迟解析与资源释放', () => {
       throw new Error('failed');
     });
 
-    const app = new Cyrene({ providers: { good, bad } });
+    const app = new Cyrene({ ripples: { good, bad } });
     let settled = false;
     const startup = app.start();
 
@@ -267,7 +267,7 @@ describe('延迟解析与资源释放', () => {
     const explicit = vi.fn();
     const value = { [Symbol.dispose]: automatic };
     const service = ripple({}, () => value, { lifetime: 'transient', dispose: explicit });
-    const app = new Cyrene({ providers: { a: service, b: service } });
+    const app = new Cyrene({ ripples: { a: service, b: service } });
     await app.start();
     await app.dispose();
     expect(explicit).toHaveBeenCalledOnce();

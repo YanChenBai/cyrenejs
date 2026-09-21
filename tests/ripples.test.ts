@@ -1,16 +1,16 @@
 import { describe, expect, expectTypeOf, it } from 'vite-plus/test';
 
-import { RIPPLE_SYMBOL, RIPPLE_PROVIDERS_SYMBOL } from '../src/brands.ts';
+import { RIPPLE_SYMBOL, RIPPLES_SYMBOL } from '../src/brands.ts';
 import {
   Cyrene,
   InvalidDependencyError,
-  defineProviders,
+  defineRipples,
   isRipple,
-  isRippleProviders,
+  isRipples,
   ripple,
   token,
 } from '../src/index.ts';
-import type { Dependency, RippleProviders } from '../src/index.ts';
+import type { Dependency, Ripples } from '../src/index.ts';
 
 describe('Ripple 识别', () => {
   it('拒绝 Symbol 和不可枚举入口, 接受已标记及展开组合后的集合', async () => {
@@ -23,29 +23,29 @@ describe('Ripple 识别', () => {
       Object.defineProperty({}, symbol, { value: service }),
     ];
 
-    for (const providers of invalid) {
-      expect(() => defineProviders(providers as never)).toThrow(InvalidDependencyError);
-      expect(() => new Cyrene({ providers: providers as never })).toThrow(InvalidDependencyError);
+    for (const ripples of invalid) {
+      expect(() => defineRipples(ripples as never)).toThrow(InvalidDependencyError);
+      expect(() => new Cyrene({ ripples: ripples as never })).toThrow(InvalidDependencyError);
     }
 
-    expect(() => defineProviders({ bad: 1 } as never)).toThrow(InvalidDependencyError);
-    const first = defineProviders({ service });
-    const combined = defineProviders({ ...first, other: service });
-    const app = new Cyrene({ providers: combined });
+    expect(() => defineRipples({ bad: 1 } as never)).toThrow(InvalidDependencyError);
+    const first = defineRipples({ service });
+    const combined = defineRipples({ ...first, other: service });
+    const app = new Cyrene({ ripples: combined });
     expect(await app.start()).toEqual({ service: 1, other: 1 });
     await app.dispose();
-    expect(() => defineProviders(Object.freeze({ service }))).toThrow(TypeError);
-    expect(defineProviders(Object.freeze(first))).toBe(first);
+    expect(() => defineRipples(Object.freeze({ service }))).toThrow(TypeError);
+    expect(defineRipples(Object.freeze(first))).toBe(first);
 
     const checkInvalidKeys = () => {
       // @ts-expect-error Symbol 不能作为入口名
-      defineProviders({ [symbol]: service });
+      defineRipples({ [symbol]: service });
       // @ts-expect-error 普通入口对象也禁止 Symbol 键
-      new Cyrene({ providers: { service, [symbol]: service } });
+      new Cyrene({ ripples: { service, [symbol]: service } });
       // @ts-expect-error 数字入口名应显式写为字符串
-      defineProviders({ 1: service });
+      defineRipples({ 1: service });
       // @ts-expect-error 构造时同样限制数字入口名
-      new Cyrene({ providers: { 1: service } });
+      new Cyrene({ ripples: { 1: service } });
     };
 
     expectTypeOf(checkInvalidKeys).toBeFunction();
@@ -54,20 +54,20 @@ describe('Ripple 识别', () => {
   it('分别识别定义与集合, 标识不可枚举或修改', () => {
     const service = ripple({}, () => 1);
     const source = { service };
-    const providers = defineProviders(source);
-    expect(providers).toBe(source);
-    expect(defineProviders(providers)).toBe(providers);
+    const ripples = defineRipples(source);
+    expect(ripples).toBe(source);
+    expect(defineRipples(ripples)).toBe(ripples);
     expect(isRipple(service)).toBe(true);
-    expect(isRippleProviders(providers)).toBe(true);
-    expect(isRipple(providers)).toBe(false);
-    expect(isRippleProviders(service)).toBe(false);
+    expect(isRipples(ripples)).toBe(true);
+    expect(isRipple(ripples)).toBe(false);
+    expect(isRipples(service)).toBe(false);
     expect(isRipple(service())).toBe(false);
-    expect(Object.keys(providers)).toEqual(['service']);
-    expect(isRippleProviders({ ...providers })).toBe(false);
+    expect(Object.keys(ripples)).toEqual(['service']);
+    expect(isRipples({ ...ripples })).toBe(false);
 
     for (const [value, symbol] of [
       [service, RIPPLE_SYMBOL],
-      [providers, RIPPLE_PROVIDERS_SYMBOL],
+      [ripples, RIPPLES_SYMBOL],
     ] as const) {
       expect(Object.getOwnPropertyDescriptor(value, symbol)).toEqual({
         value: true,
@@ -78,12 +78,12 @@ describe('Ripple 识别', () => {
     }
 
     expectTypeOf(service[RIPPLE_SYMBOL]).toEqualTypeOf<true>();
-    expectTypeOf(providers[RIPPLE_PROVIDERS_SYMBOL]).toEqualTypeOf<true>();
+    expectTypeOf(ripples[RIPPLES_SYMBOL]).toEqualTypeOf<true>();
   });
 
   it('拒绝普通值, 错误标识与继承标识', () => {
     const service = ripple({}, () => 1);
-    const providers = defineProviders({ service });
+    const ripples = defineRipples({ service });
 
     for (const value of [
       undefined,
@@ -96,13 +96,13 @@ describe('Ripple 识别', () => {
       [],
       () => {},
       { [RIPPLE_SYMBOL]: true },
-      { [RIPPLE_PROVIDERS_SYMBOL]: false },
+      { [RIPPLES_SYMBOL]: false },
       Object.assign(() => {}, { [RIPPLE_SYMBOL]: false }),
-      Object.create(providers),
+      Object.create(ripples),
       Object.setPrototypeOf(() => {}, service),
     ]) {
       expect(isRipple(value)).toBe(false);
-      expect(isRippleProviders(value)).toBe(false);
+      expect(isRipples(value)).toBe(false);
     }
 
     const checkNarrowing = (value: unknown) => {
@@ -110,8 +110,8 @@ describe('Ripple 识别', () => {
         expectTypeOf(value).toEqualTypeOf<Dependency<unknown, never[]>>();
       }
 
-      if (isRippleProviders(value)) {
-        expectTypeOf(value).toEqualTypeOf<RippleProviders>();
+      if (isRipples(value)) {
+        expectTypeOf(value).toEqualTypeOf<Ripples>();
       }
     };
 
@@ -122,13 +122,13 @@ describe('Ripple 识别', () => {
     const Config = token<string>('Config');
     const service = ripple({}, (_deps, name: string) => name.length);
 
-    const providers = defineProviders({
+    const ripples = defineRipples({
       config: Config,
       count: service('users'),
       ready: ripple({}, () => true),
     });
 
-    const app = new Cyrene({ providers, bindings: [{ token: Config, value: 'test' }] });
+    const app = new Cyrene({ ripples, bindings: [{ token: Config, value: 'test' }] });
     const result = await app.start();
     expectTypeOf(result.count).toEqualTypeOf<number>();
     expectTypeOf(result.config).toEqualTypeOf<string>();
@@ -136,7 +136,7 @@ describe('Ripple 识别', () => {
     expectTypeOf<keyof typeof result>().toEqualTypeOf<'config' | 'count' | 'ready'>();
     expect(Reflect.ownKeys(result)).toEqual(['config', 'count', 'ready']);
 
-    const combined = ripple(providers, inputs => {
+    const combined = ripple(ripples, inputs => {
       expectTypeOf<keyof typeof inputs>().toEqualTypeOf<'config' | 'count' | 'ready'>();
       return inputs.count;
     });
@@ -146,9 +146,9 @@ describe('Ripple 识别', () => {
 
     const checkInvalidCalls = () => {
       // @ts-expect-error 普通值不能作为入口
-      defineProviders({ invalid: 123 });
+      defineRipples({ invalid: 123 });
       // @ts-expect-error 参数化定义必须先创建 Ref
-      defineProviders({ service });
+      defineRipples({ service });
     };
 
     expectTypeOf(checkInvalidCalls).toBeFunction();

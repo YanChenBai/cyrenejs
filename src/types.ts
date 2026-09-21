@@ -4,7 +4,7 @@ import type {
   refBrand,
   tokenBrand,
   RIPPLE_SYMBOL,
-  RIPPLE_PROVIDERS_SYMBOL,
+  RIPPLES_SYMBOL,
 } from './brands.ts';
 
 export type Lifetime = 'singleton' | 'transient';
@@ -46,13 +46,10 @@ export interface Lazy<T> {
 export type Resolvable<T = unknown> = Dependency<T, []> | DependencyRef<T> | Token<T>;
 export type DependencyEntries = Record<string, Resolvable>;
 
-export type ValidProviders<T> = Record<
-  Exclude<keyof T, string | typeof RIPPLE_PROVIDERS_SYMBOL>,
-  never
->;
+export type ValidRipples<T> = Record<Exclude<keyof T, string | typeof RIPPLES_SYMBOL>, never>;
 
-export type RippleProviders<T extends DependencyEntries = DependencyEntries> = T & {
-  readonly [RIPPLE_PROVIDERS_SYMBOL]: true;
+export type Ripples<T extends DependencyEntries = DependencyEntries> = T & {
+  readonly [RIPPLES_SYMBOL]: true;
 };
 
 export type InferInput<T> =
@@ -65,7 +62,7 @@ export type InferInput<T> =
         : T;
 
 export type ResolveInputs<T> = {
-  [K in keyof T as K extends typeof RIPPLE_PROVIDERS_SYMBOL ? never : K]: InferInput<T[K]>;
+  [K in keyof T as K extends typeof RIPPLES_SYMBOL ? never : K]: InferInput<T[K]>;
 };
 export type ResolveEntries<T extends DependencyEntries> = ResolveInputs<T>;
 
@@ -91,7 +88,7 @@ export interface CyreneOptions<
   T extends DependencyEntries = {},
   B extends readonly Binding[] = readonly Binding[],
 > {
-  providers?: T & ValidProviders<T>;
+  ripples?: T & ValidRipples<T>;
   bindings?: B & ValidBindings<B>;
 }
 

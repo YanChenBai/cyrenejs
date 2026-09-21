@@ -15,7 +15,7 @@
   <a href="https://www.npmjs.com/package/cyrenejs"><img src="https://img.shields.io/npm/v/cyrenejs?style=flat&labelColor=18212f&color=a78bfa" alt="npm 版本" /></a>
   <img src="https://img.shields.io/badge/TypeScript-type_safe-3178c6?style=flat&labelColor=18212f" alt="TypeScript 类型推导" />
   <img src="https://img.shields.io/badge/module-ESM-a78bfa?style=flat&labelColor=18212f" alt="ESM 模块" />
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.18.0-5fa777?style=flat&labelColor=18212f" alt="Node.js 22.18.0 及以上" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.0.0-5fa777?style=flat&labelColor=18212f" alt="Node.js 22.0.0 及以上" />
 </p>
 
 <br />
@@ -38,7 +38,7 @@ npm install cyrenejs
 
 也可以使用 `pnpm add cyrenejs` 或 `vp add cyrenejs`
 
-需要 Node.js 22.18.0 及以上, 包提供 ESM 入口和 TypeScript 类型声明
+需要 Node.js 22.0.0 及以上, 包提供 ESM 入口和 TypeScript 类型声明
 下面的 TypeScript 示例使用 `await using`, 请通过支持该语法的 TypeScript 工具链编译运行; 也可以使用 `try/finally` 配合 `await app.dispose()` 显式释放资源
 
 ```ts
@@ -57,7 +57,7 @@ const users = ripple({ logger: logger('users') }, ({ logger }) => ({
 }));
 
 await using app = new Cyrene({
-  providers: { users },
+  ripples: { users },
   bindings: [{ token: Config, value: { prefix: 'app' } }],
 });
 
@@ -65,7 +65,7 @@ const services = await app.start();
 services.users.describe(); // 返回 app:users
 ```
 
-`providers` 声明需要启动的命名入口, `bindings` 提供 Token 的外部实现
+`ripples` 声明需要启动的命名入口, `bindings` 提供 Token 的外部实现
 
 `start()` 会先校验全部入口的依赖图, 再按依赖关系初始化, 返回值保留入口名称和实例类型
 
@@ -104,27 +104,27 @@ const users = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
 const audit = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
 ```
 
-## Provider 集合与运行时识别
+## Ripple 集合与运行时识别
 
-`defineProviders()` 在原对象上添加集合标识并返回它, 保留入口名称和实例类型推导。
+`defineRipples()` 在原对象上添加集合标识并返回它, 保留入口名称和实例类型推导。
 入口接受无参数依赖定义、Ref 或 Token; 参数化定义需要先创建 Ref。
 入口键必须是自身可枚举的字符串, Symbol 入口和不可枚举入口会报错。
 
 ```ts
-import { defineProviders, isRipple, isRippleProviders, ripple } from 'cyrenejs';
+import { defineRipples, isRipple, isRipples, ripple } from 'cyrenejs';
 
 const logger = ripple({}, () => ({ name: 'logger' }));
-const providers = defineProviders({ logger });
+const ripples = defineRipples({ logger });
 
 isRipple(logger); // true
-isRippleProviders(providers); // true
-// 直接传给 new Cyrene({ providers })
+isRipples(ripples); // true
+// 直接传给 new Cyrene({ ripples })
 ```
 
-`ripple()` 和 `defineProviders()` 的返回值分别带有内部 Symbol 标识,
-通过 `isRipple()` 和 `isRippleProviders()` 判断, Symbol 不从包入口导出。
+`ripple()` 和 `defineRipples()` 的返回值分别带有内部 Symbol 标识,
+通过 `isRipple()` 和 `isRipples()` 判断, Symbol 不从包入口导出。
 标识不可枚举、不可修改、不可删除, 不会随对象展开复制或出现在解析结果中。
-`defineProviders()` 需要可添加属性的对象, 不冻结集合; 对同一集合可重复调用。
+`defineRipples()` 需要可添加属性的对象, 不冻结集合; 对同一集合可重复调用。
 判断方法检查自身标识严格等于 `true`, 不代表依赖已注册或可被当前运行时解析。
 v0 要求定义与 Cyrene 共享同一份运行时模块, 不支持跨包副本解析。
 

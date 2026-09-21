@@ -19,7 +19,7 @@ describe('依赖定义与输入', () => {
     expect(factory).not.toHaveBeenCalled();
 
     const app = new Cyrene({
-      providers: { users: ref },
+      ripples: { users: ref },
       bindings: [{ token: Config, value: { prefix: 'test:' } }],
     });
 
@@ -73,15 +73,15 @@ describe('依赖定义与输入', () => {
     const inputs = { value: 1 };
     const source = ripple(inputs, ({ value }) => value);
     inputs.value = 2;
-    const providers = { value: source, empty: Value, handler: Handler };
+    const ripples = { value: source, empty: Value, handler: Handler };
     const binding = { token: Handler, value: handler };
 
     const app = new Cyrene({
-      providers,
+      ripples,
       bindings: [{ token: Value, value: undefined }, binding],
     });
 
-    providers.value = ripple({}, () => 3);
+    ripples.value = ripple({}, () => 3);
     binding.value = vi.fn();
     const result = await app.start();
     expect(result).toEqual({ value: 1, empty: undefined, handler });
@@ -109,7 +109,7 @@ describe('依赖定义与输入', () => {
       // @ts-expect-error 缺少必填参数
       required();
       // @ts-expect-error 参数化定义不能直接作为入口
-      new Cyrene({ providers: { required } });
+      new Cyrene({ ripples: { required } });
       // @ts-expect-error 可选参数也需显式创建 Ref
       void new Cyrene().resolve(optional);
       // @ts-expect-error rest 参数也需显式创建 Ref

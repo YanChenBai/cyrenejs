@@ -21,7 +21,7 @@ const users = ripple(
   ({ database, logger }) => new UserService(database, logger),
 );
 const app = new Cyrene({
-  providers: { database, users },
+  ripples: { database, users },
   bindings: [{ token: Config, value: { databaseUrl: 'postgres://localhost/app' } }],
 });
 const services = await app.start();
@@ -29,21 +29,21 @@ const services = await app.start();
 await app.dispose();
 ```
 
-| API                                 | 职责                                   |
-| ----------------------------------- | -------------------------------------- |
-| ripple(inputs, factory, options?)   | 返回可调用的依赖定义                   |
-| defineProviders(providers)          | 约束并标记命名入口集合                 |
-| isRipple(value)                     | 判断是否带有 Ripple 定义标识           |
-| isRippleProviders(value)            | 判断是否带有入口集合标识               |
-| dependency(...params)               | 记录参数，创建新的 DependencyRef       |
-| token<T>(name)                      | 声明外部能力身份                       |
-| lazy(() => target)                  | 声明延迟依赖边                         |
-| new Cyrene({ providers, bindings }) | 创建独立作用域，快照保存入口和绑定     |
-| cyrene.start()                      | 校验并初始化全部命名入口，返回对应实例 |
-| cyrene.resolve(target)              | 按需解析单个目标                       |
-| cyrene.validate(target?)            | 校验单个目标或全部入口，不执行 factory |
-| cyrene.inspect(target?)             | 返回单个目标或全部入口的依赖图         |
-| cyrene.dispose()                    | 释放持有的资源                         |
+| API                               | 职责                                   |
+| --------------------------------- | -------------------------------------- |
+| ripple(inputs, factory, options?) | 返回可调用的依赖定义                   |
+| defineRipples(ripples)            | 约束并标记命名入口集合                 |
+| isRipple(value)                   | 判断是否带有 Ripple 定义标识           |
+| isRipples(value)                  | 判断是否带有入口集合标识               |
+| dependency(...params)             | 记录参数，创建新的 DependencyRef       |
+| token<T>(name)                    | 声明外部能力身份                       |
+| lazy(() => target)                | 声明延迟依赖边                         |
+| new Cyrene({ ripples, bindings }) | 创建独立作用域，快照保存入口和绑定     |
+| cyrene.start()                    | 校验并初始化全部命名入口，返回对应实例 |
+| cyrene.resolve(target)            | 按需解析单个目标                       |
+| cyrene.validate(target?)          | 校验单个目标或全部入口，不执行 factory |
+| cyrene.inspect(target?)           | 返回单个目标或全部入口的依赖图         |
+| cyrene.dispose()                  | 释放持有的资源                         |
 
 不提供 bind()、add()、createScope()、CyreneScope 或 scoped lifetime，不保留兼容接口。
 
@@ -78,15 +78,15 @@ await app.resolve(separateDatabase);
 
 依赖映射和配置浅拷贝后保存为只读 metadata。参数元组快照保存，但普通对象值和参数对象不深拷贝。
 
-## 4. providers 与 bindings
+## 4. ripples 与 bindings
 
-providers 是命名入口映射，每个值必须是可解析目标：无参数 Dependency、DependencyRef 或 Token。start 初始化所有入口及其非 lazy 可达依赖，返回值保留入口名称并推导实例类型。入口名不参与 identity。
+ripples 是命名入口映射，每个值必须是可解析目标：无参数 Dependency、DependencyRef 或 Token。start 初始化所有入口及其非 lazy 可达依赖，返回值保留入口名称并推导实例类型。入口名不参与 identity。
 
 入口使用自身可枚举的字符串键。类型层拒绝数字键和 Symbol 键；JavaScript 数字属性在运行时已转换为字符串，按字符串入口处理。运行时拒绝 Symbol 键与自身不可枚举入口，内部集合标识除外，避免静默忽略声明。依赖 inputs 仍支持 Symbol 键。
 
-defineProviders 在原对象上添加不可枚举、不可修改、不可删除的内部标识，返回原对象并保留类型推导。它校验入口形状及目标身份，不校验尚未绑定的依赖图，也不冻结集合。首次标记需要可扩展对象；已经标记的集合可以重复传入。组合使用对象展开后重新调用 defineProviders；标识本身不随展开复制。普通入口对象仍可直接传给 Cyrene。
+defineRipples 在原对象上添加不可枚举、不可修改、不可删除的内部标识，返回原对象并保留类型推导。它校验入口形状及目标身份，不校验尚未绑定的依赖图，也不冻结集合。首次标记需要可扩展对象；已经标记的集合可以重复传入。组合使用对象展开后重新调用 defineRipples；标识本身不随展开复制。普通入口对象仍可直接传给 Cyrene。
 
-defineProviders 不是模块系统，不引入 imports、exports、注册顺序或独立生命周期。内部 RIPPLE_SYMBOL 与 RIPPLE_PROVIDERS_SYMBOL 不从包入口导出；isRipple 与 isRippleProviders 只判断自身标识严格等于 true，不表示目标可由当前运行时解析。
+defineRipples 不是模块系统，不引入 imports、exports、注册顺序或独立生命周期。内部 RIPPLE_SYMBOL 与 RIPPLES_SYMBOL 不从包入口导出；isRipple 与 isRipples 只判断自身标识严格等于 true，不表示目标可由当前运行时解析。
 
 v0 要求依赖定义、Ref、Token、LazyRef 与 Cyrene 共享同一份运行时模块。Symbol.for 标识可以跨副本识别，但 metadata 不跨副本共享；跨副本解析不受支持。插件应复用宿主的 cyrenejs 依赖。
 
@@ -110,18 +110,18 @@ type Binding<T = unknown> =
 
 ```ts
 interface CyreneOptions<
-  TProviders extends DependencyEntries = {},
+  TRipples extends DependencyEntries = {},
   TBindings extends readonly Binding[] = readonly Binding[],
 > {
-  providers?: TProviders & ValidProviders<TProviders>;
+  ripples?: TRipples & ValidRipples<TRipples>;
   bindings?: TBindings & ValidBindings<TBindings>;
 }
 class Cyrene<
-  TProviders extends DependencyEntries = {},
+  TRipples extends DependencyEntries = {},
   const TBindings extends readonly Binding[] = readonly Binding[],
 > {
-  constructor(options?: CyreneOptions<TProviders, TBindings>);
-  start(): Promise<ResolveEntries<TProviders>>;
+  constructor(options?: CyreneOptions<TRipples, TBindings>);
+  start(): Promise<ResolveEntries<TRipples>>;
   resolve<T>(target: Resolvable<T>): Promise<T>;
   validate(target?: Resolvable<unknown>): void;
   inspect(target?: Resolvable<unknown>): DependencyGraph;
@@ -130,11 +130,11 @@ class Cyrene<
 }
 ```
 
-没有 providers 时 start 返回空对象。需要独立生命周期，就创建另一个 Cyrene；没有父子查找、继承或递归启动。共享实例显式通过 Token value 传入：
+没有 ripples 时 start 返回空对象。需要独立生命周期，就创建另一个 Cyrene；没有父子查找、继承或递归启动。共享实例显式通过 Token value 传入：
 
 ```ts
 const task = new Cyrene({
-  providers: { job },
+  ripples: { job },
   bindings: [{ token: Database, value: services.database }],
 });
 await task.start();

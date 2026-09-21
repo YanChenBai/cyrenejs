@@ -7,7 +7,7 @@ import {
 import { getBinding, inspectGraph } from './graph.ts';
 import {
   assertResolvable,
-  assertProviders,
+  assertRipples,
   entries,
   getDefinition,
   getLazyTarget,
@@ -65,10 +65,10 @@ async function settle<T>(promises: readonly Promise<T>[]): Promise<T[]> {
 }
 
 export class Cyrene<
-  TProviders extends DependencyEntries = {},
+  TRipples extends DependencyEntries = {},
   const TBindings extends readonly Binding[] = readonly Binding[],
 > {
-  #providers: Readonly<TProviders>;
+  #ripples: Readonly<TRipples>;
   readonly #bindings = new Map<Token, Binding>();
   readonly #cache = new Map<object, Instance>();
   readonly #instances = new Set<Instance>();
@@ -76,12 +76,12 @@ export class Cyrene<
   readonly #borrowed = new Set<object>();
   readonly #resources = new Map<object, Resource>();
   #state: 'active' | 'disposing' | 'disposed' = 'active';
-  #startup?: Promise<ResolveEntries<TProviders>>;
+  #startup?: Promise<ResolveEntries<TRipples>>;
   #disposal?: Promise<void>;
 
-  constructor(options: CyreneOptions<TProviders, TBindings> = {}) {
-    assertProviders(options.providers ?? {});
-    this.#providers = Object.freeze({ ...options.providers }) as Readonly<TProviders>;
+  constructor(options: CyreneOptions<TRipples, TBindings> = {}) {
+    assertRipples(options.ripples ?? {});
+    this.#ripples = Object.freeze({ ...options.ripples }) as Readonly<TRipples>;
 
     for (const binding of options.bindings ?? []) {
       if (!isToken(binding.token)) {
@@ -110,7 +110,7 @@ export class Cyrene<
     }
   }
 
-  start(): Promise<ResolveEntries<TProviders>> {
+  start(): Promise<ResolveEntries<TRipples>> {
     if (this.#state !== 'active') {
       return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
     }
@@ -121,20 +121,20 @@ export class Cyrene<
 
     this.#startup = this.#track(
       Promise.resolve().then(async () => {
-        const providers = Object.entries(this.#providers);
+        const ripples = Object.entries(this.#ripples);
         // 全部入口统一校验后才开始初始化, 避免后面的入口无效却已产生副作用
         inspectGraph(
-          providers.map(([, target]) => target),
+          ripples.map(([, target]) => target),
           this.#bindings,
         );
 
         const values = await settle(
-          providers.map(([, target]) => this.#resolveTarget(target, undefined, [])),
+          ripples.map(([, target]) => this.#resolveTarget(target, undefined, [])),
         );
 
         return Object.fromEntries(
-          providers.map(([name], index) => [name, values[index]]),
-        ) as ResolveEntries<TProviders>;
+          ripples.map(([name], index) => [name, values[index]]),
+        ) as ResolveEntries<TRipples>;
       }),
     );
     return this.#startup;
@@ -160,7 +160,7 @@ export class Cyrene<
   inspect(target?: Resolvable): DependencyGraph {
     this.#assertActive();
     return inspectGraph(
-      target === undefined ? Object.values(this.#providers) : [target],
+      target === undefined ? Object.values(this.#ripples) : [target],
       this.#bindings,
     );
   }
@@ -505,7 +505,7 @@ export class Cyrene<
       instance.promise = Promise.resolve();
     }
 
-    this.#providers = Object.freeze({}) as Readonly<TProviders>;
+    this.#ripples = Object.freeze({}) as Readonly<TRipples>;
     this.#cache.clear();
     this.#instances.clear();
     this.#bindings.clear();

@@ -55,7 +55,7 @@ describe('资源归属与别名', () => {
     const leaf = ripple({}, () => shared);
     const middle = ripple({ leaf }, () => ({}), { dispose: cleanup });
     const root = ripple({ middle }, () => shared);
-    const app = new Cyrene({ providers: { root } });
+    const app = new Cyrene({ ripples: { root } });
     await app.start();
     const disposal = app.dispose();
     await expect(disposal).rejects.toMatchObject({ errors: [failure] });
@@ -88,7 +88,7 @@ describe('资源归属与别名', () => {
       },
     });
 
-    const app = new Cyrene({ providers: reverse ? { b, consumer } : { consumer, b } });
+    const app = new Cyrene({ ripples: reverse ? { b, consumer } : { consumer, b } });
     await app.start();
     await app.dispose();
     expect(order.filter(name => name === 'shared')).toHaveLength(1);
@@ -154,7 +154,7 @@ describe('资源归属与别名', () => {
     const alias = ripple({ forwarded }, ({ forwarded }) => forwarded);
 
     const app = new Cyrene({
-      providers: { alias, fn: ripple({}, () => fn) },
+      ripples: { alias, fn: ripple({}, () => fn) },
       bindings: [
         { token: External, value: object },
         { token: Unused, value: fn },
@@ -180,7 +180,7 @@ describe('资源归属与别名', () => {
       dispose: explicit,
     });
 
-    const app = new Cyrene({ providers: { service }, bindings: [{ token: External, value }] });
+    const app = new Cyrene({ ripples: { service }, bindings: [{ token: External, value }] });
     await expect(app.start()).rejects.toMatchObject({ cause: expect.any(InvalidDependencyError) });
     await app.dispose();
     expect(automatic).not.toHaveBeenCalled();
@@ -194,7 +194,7 @@ describe('资源归属与别名', () => {
     const service = ripple({}, () => 1, { lifetime: 'transient', dispose });
 
     const app = new Cyrene({
-      providers: { a: service, b: service },
+      ripples: { a: service, b: service },
       bindings: [{ token: External, value: 1 }],
     });
 

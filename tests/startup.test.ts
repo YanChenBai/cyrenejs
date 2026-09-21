@@ -18,7 +18,7 @@ describe('启动, 绑定与依赖图', () => {
     const missing = token<number>('Missing');
 
     const app = new Cyrene({
-      providers: {
+      ripples: {
         first: ripple({}, factory),
         invalid: ripple({ missing }, ({ missing }) => missing),
       },
@@ -36,7 +36,7 @@ describe('启动, 绑定与依赖图', () => {
     const unused = vi.fn(() => ({}));
 
     const app = new Cyrene({
-      providers: { service: Service, direct: service },
+      ripples: { service: Service, direct: service },
       bindings: [
         { token: Service, dependency: service },
         { token: Unused, dependency: ripple({}, unused) },
@@ -72,9 +72,7 @@ describe('启动, 绑定与依赖图', () => {
           ],
         }),
     ).toThrow(InvalidDependencyError);
-    expect(() => new Cyrene({ providers: { invalid: 1 } as never })).toThrow(
-      InvalidDependencyError,
-    );
+    expect(() => new Cyrene({ ripples: { invalid: 1 } as never })).toThrow(InvalidDependencyError);
     const SameName = token<number>('Value');
 
     const app = new Cyrene({
@@ -95,7 +93,7 @@ describe('启动, 绑定与依赖图', () => {
     const b = ripple({ value: A }, factory);
 
     const app = new Cyrene({
-      providers: { a },
+      ripples: { a },
       bindings: [
         { token: A, dependency: a },
         { token: B, dependency: b },
@@ -111,7 +109,7 @@ describe('启动, 绑定与依赖图', () => {
     const value = ripple({}, factory, { debugName: 'Value' });
     const ref = value();
     const root = ripple({ value: lazy(() => ref) }, ({ value }) => value);
-    const graph = new Cyrene({ providers: { root } }).inspect();
+    const graph = new Cyrene({ ripples: { root } }).inspect();
     expect(graph.edges.map(edge => edge.kind)).toEqual(
       expect.arrayContaining(['lazy', 'definition']),
     );
@@ -123,7 +121,7 @@ describe('启动, 绑定与依赖图', () => {
     const gate = deferred<object>();
     const factory = vi.fn(() => gate.promise);
     const dependency = ripple({}, factory);
-    const app = new Cyrene({ providers: { first: dependency, second: dependency } });
+    const app = new Cyrene({ ripples: { first: dependency, second: dependency } });
     const startup = app.start();
     expect(app.start()).toBe(startup);
     const resolved = app.resolve(dependency);
@@ -144,7 +142,7 @@ describe('启动, 绑定与依赖图', () => {
       .mockResolvedValue(42);
 
     const dependency = ripple({}, factory, { debugName: 'Database' });
-    const app = new Cyrene({ providers: { dependency } });
+    const app = new Cyrene({ ripples: { dependency } });
     const startup = app.start();
     await expect(startup).rejects.toMatchObject({
       name: 'ResolutionError',
@@ -160,7 +158,7 @@ describe('启动, 绑定与依赖图', () => {
   it('复用 transient 启动结果, 显式解析时创建新实例', async () => {
     const factory = vi.fn(() => ({}));
     const dependency = ripple({}, factory, { lifetime: 'transient' });
-    const app = new Cyrene({ providers: { dependency } });
+    const app = new Cyrene({ ripples: { dependency } });
     const result = await app.start();
     expect(await app.start()).toBe(result);
     expect(await app.resolve(dependency)).not.toBe(result.dependency);
@@ -203,7 +201,7 @@ describe('启动, 绑定与依赖图', () => {
       },
     });
 
-    const app = new Cyrene({ providers: { service } });
+    const app = new Cyrene({ ripples: { service } });
     const result = await app.start();
     expect(await app.resolve(service)).toBe(result.service);
     expect(await app.resolve(service)).toBe(result.service);

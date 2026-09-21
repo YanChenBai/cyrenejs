@@ -7,6 +7,7 @@
 <p align="center">
   <a href="#quick-start">快速开始</a> ·
   <a href="#features">能力一览</a> ·
+  <a href="#agent">Agent</a> ·
   <a href="./docs/CYRENE_DESIGN.md">设计文档</a> ·
   <a href="#development">参与开发</a>
 </p>
@@ -164,6 +165,27 @@ Users #0
 外部对象被 factory 原样返回时仍为借用资源, 对它配置显式 `dispose` 会使解析失败。
 多个定义返回同一对象时合并资源依赖并只释放一次; 显式清理优先于自动清理。
 共享对象的多个显式清理方法必须是同一函数引用, 否则后完成的解析报错, 已登记的资源仍会清理。
+
+<a id="agent"></a>
+
+## 🤖 Agent
+
+Cyrene 随 npm 包提供 [cyrenejs skill](./skills/cyrenejs/SKILL.md), 帮助编码 Agent 正确使用依赖定义、Token 绑定、延迟解析和资源释放。
+
+在使用 Cyrene 的项目中安装 `cyrenejs` 后, 可以通过 [skills-npm](https://github.com/antfu/skills-npm) 将 skill 链接到 Agent 的技能目录:
+
+```sh
+npm install -D skills-npm
+npx skills-npm setup
+```
+
+`setup` 会自动检测 Agent、完成首次同步, 并将同步命令追加到 `package.json` 的 `prepare` 脚本, 同时为生成的链接添加 `.gitignore` 规则。之后安装或更新依赖时会自动同步, 让 skill 随项目使用的包版本一起更新。
+
+如果只想手动同步, 可以运行:
+
+```sh
+npx skills-npm
+```
 
 <a id="development"></a>
 

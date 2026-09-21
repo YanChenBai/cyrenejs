@@ -48,9 +48,13 @@ export type DependencyEntries = Record<string, Resolvable>;
 
 export type ValidRipples<T> = Record<Exclude<keyof T, string | typeof RIPPLES_SYMBOL>, never>;
 
-export type Ripples<T extends DependencyEntries = DependencyEntries> = T & {
+export type RipplesBrand = {
   readonly [RIPPLES_SYMBOL]: true;
 };
+
+export type Ripples<T extends DependencyEntries = DependencyEntries> = {
+  [K in keyof T as K extends string ? K : never]: T[K];
+} & RipplesBrand;
 
 export type InferInput<T> =
   T extends DependencyIdentity<infer R>

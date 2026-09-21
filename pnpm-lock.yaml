@@ -190,6 +190,9 @@ importers:
       changelogen:
         specifier: 'catalog:'
         version: 0.6.2
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
       vite:
         specifier: 'catalog:'
         version: '@voidzero-dev/vite-plus-core@0.3.2(@types/node@26.5.1)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1)'

@@ -128,6 +128,30 @@ isRipples(ripples); // true
 判断方法检查自身标识严格等于 `true`, 不代表依赖已注册或可被当前运行时解析。
 v0 要求定义与 Cyrene 共享同一份运行时模块, 不支持跨包副本解析。
 
+## 查看依赖图
+
+`formatGraph()` 将 `inspect()` 的结果转换为终端文本, 由调用方决定打印或写入文件:
+
+```ts
+import { formatGraph } from 'cyrenejs';
+
+console.log(formatGraph(app.inspect()));
+console.log(formatGraph(app.inspect(users)));
+```
+
+```text
+Users #0
+├─ Database #1
+│  └─ Config #2 [token]
+└─ Logger(ref) #3 [ref]
+   └─ Logger #4 [definition]
+```
+
+节点名称来自 `debugName` 或 Token 名称。`#id` 区分同名节点,
+`↗` 表示已展开的共享节点, `↻` 表示当前路径中的循环引用。
+延迟边标记为 `[lazy]`, Ref 的定义关系标记为 `[definition]` 且不沿该边展开。
+空图输出 `(empty graph)`。格式化不会执行工厂, 也不会输出 Ref 参数值。
+
 ## 🍃 资源释放
 
 `await using` 会在离开作用域时释放 Cyrene, 也可以显式调用 `await app.dispose()`

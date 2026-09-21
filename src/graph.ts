@@ -123,9 +123,7 @@ export function inspectGraph(
     return id;
   }
 
-  for (const target of targets) {
-    visit(target, []);
-  }
+  const roots = [...new Set(targets.map(target => visit(target, [])))];
 
   const adjacency = new Map<number, number[]>();
 
@@ -169,5 +167,5 @@ export function inspectGraph(
     check(node.id, []);
   }
 
-  return { nodes, edges };
+  return { roots, nodes, edges };
 }

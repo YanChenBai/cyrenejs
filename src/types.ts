@@ -107,6 +107,7 @@ export interface GraphEdge {
 }
 
 export interface DependencyGraph {
+  roots: number[];
   nodes: GraphNode[];
   edges: GraphEdge[];
 }

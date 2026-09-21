@@ -198,7 +198,9 @@ dispose 首次调用立即禁止新的 start/resolve，等待已经开始的初�
 
 ResolutionError 保留 cause 与依赖路径。debugName 为可选手工标签，Token 名称仅用于诊断。
 
-inspect 返回 nodes/edges，节点包括 Dependency、Ref、Token，边区分强依赖、lazy 及 Ref 的定义关系。参数保留为 Ref metadata，不生成参数节点。不会执行 factory。
+inspect 返回 roots/nodes/edges，roots 是按入口声明顺序去重的节点 ID，显式保留同时被其他入口依赖的入口。节点包括 Dependency、Ref、Token，边区分强依赖、lazy 及 Ref 的定义关系。参数保留为 Ref metadata，不生成参数节点。不会执行 factory。
+
+独立函数 formatGraph(graph: DependencyGraph): string 将图转换为终端树形文本，不直接打印。各入口间用空行分隔，节点显示名称和 ID；共享节点标记 ↗，当前路径循环标记 ↻，不重复展开。lazy、ref、token、definition 使用标签区分，definition 边仅展示定义身份，不沿该边展开。空图返回 (empty graph)，不输出参数值。名称中的换行和制表符转为空格，保持一行一个节点。
 
 ## 11. v0 范围
 

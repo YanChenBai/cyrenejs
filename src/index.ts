@@ -5,3 +5,4 @@ export * from './token.ts';
 export * from './lazy.ts';
 export * from './types.ts';
 export * from './errors.ts';
+export * from './format-graph.ts';

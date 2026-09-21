@@ -5,7 +5,6 @@ export default defineConfig({
     tasks: {
       start: {
         command: 'node ./src/index.ts',
-        dependsOn: ['cyrenejs#build'],
       },
     },
   },

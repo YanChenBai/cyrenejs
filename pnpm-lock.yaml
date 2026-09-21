@@ -205,9 +205,6 @@ importers:
       bumpp:
         specifier: ^11.1.0
         version: 11.1.0
-      cyrenejs:
-        specifier: workspace:*
-        version: link:..
       typescript:
         specifier: ^7.0.2
         version: 7.0.2

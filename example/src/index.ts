@@ -1,4 +1,4 @@
-import { Cyrene, defineRipples, formatGraph, lazy, ripple, token } from 'cyrenejs';
+import { Cyrene, defineRipples, formatGraph, lazy, ripple, token } from '../../src/index.ts';
 
 const write = (message: string) => process.stdout.write(`${message}\n`);
 const Config = token<{ databaseUrl: string; logLevel: string }>('Config');

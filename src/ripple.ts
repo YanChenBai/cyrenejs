@@ -1,4 +1,4 @@
-import { dependencyBrand, refBrand } from './brands.ts';
+import { dependencyBrand, refBrand, RIPPLE_SYMBOL } from './brands.ts';
 import { InvalidDependencyError } from './errors.ts';
 import { setDefinition } from './metadata.ts';
 import type { Dependency, ResolveInputs, RippleOptions, ValidInputs } from './types.ts';
@@ -27,6 +27,7 @@ export function ripple<
     });
 
   Object.defineProperty(dependency, dependencyBrand, { value: Object.freeze({}) });
+  Object.defineProperty(dependency, RIPPLE_SYMBOL, { value: true });
   setDefinition(dependency, {
     inputs: Object.freeze({ ...inputs }),
     invoke: (dependencies, params) =>
@@ -38,4 +39,12 @@ export function ripple<
     Awaited<ReturnType<F>>,
     FactoryParams<F>
   >;
+}
+
+export function isRipple(value: unknown): value is Dependency<unknown, never[]> {
+  return (
+    typeof value === 'function' &&
+    Object.hasOwn(value, RIPPLE_SYMBOL) &&
+    Reflect.get(value, RIPPLE_SYMBOL) === true
+  );
 }

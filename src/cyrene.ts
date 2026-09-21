@@ -7,6 +7,7 @@ import {
 import { getBinding, inspectGraph } from './graph.ts';
 import {
   assertResolvable,
+  assertProviders,
   entries,
   getDefinition,
   getLazyTarget,
@@ -35,7 +36,13 @@ interface Instance {
   promise: Promise<unknown>;
   state: 'initializing' | 'ready' | 'failed';
   value?: unknown;
+  resource?: Resource;
+}
+
+interface Resource {
+  dependencies: Set<Resource>;
   dispose?: () => void | Promise<void>;
+  explicitDispose?: (value: unknown) => void | Promise<void>;
 }
 
 async function settle<T>(promises: readonly Promise<T>[]): Promise<T[]> {
@@ -66,16 +73,15 @@ export class Cyrene<
   readonly #cache = new Map<object, Instance>();
   readonly #instances = new Set<Instance>();
   readonly #pending = new Set<Promise<unknown>>();
+  readonly #borrowed = new Set<object>();
+  readonly #resources = new Map<object, Resource>();
   #state: 'active' | 'disposing' | 'disposed' = 'active';
   #startup?: Promise<ResolveEntries<TProviders>>;
   #disposal?: Promise<void>;
 
   constructor(options: CyreneOptions<TProviders, TBindings> = {}) {
+    assertProviders(options.providers ?? {});
     this.#providers = Object.freeze({ ...options.providers }) as Readonly<TProviders>;
-
-    for (const target of Object.values(this.#providers)) {
-      assertResolvable(target);
-    }
 
     for (const binding of options.bindings ?? []) {
       if (!isToken(binding.token)) {
@@ -97,6 +103,10 @@ export class Cyrene<
       }
 
       this.#bindings.set(binding.token, Object.freeze({ ...binding }));
+
+      if ('value' in binding && isObject(binding.value)) {
+        this.#borrowed.add(binding.value);
+      }
     }
   }
 
@@ -246,12 +256,17 @@ export class Cyrene<
             const value = await definition.invoke(dependencies, isRef(target) ? target.params : []);
 
             created.value = value;
-            created.dispose = this.#getDisposer(value, definition.options.dispose);
+            created.resource = this.#resourceFor(value);
+            this.#configureDisposer(created.resource, value, definition.options.dispose);
             created.state = 'ready';
             return value;
           } catch (cause) {
             created.state = 'failed';
-            this.#instances.delete(created);
+
+            // 已返回资源的失败别名仍携带依赖关系, 清理时不能丢弃
+            if (!created.resource) {
+              this.#instances.delete(created);
+            }
 
             // 只移除失败实例的缓存, 不重置 start 已记录的失败结果
             if (isSingleton) {
@@ -358,25 +373,53 @@ export class Cyrene<
     return [...instance.waitingFor].some(child => this.#reaches(child, target, visited));
   }
 
-  #getDisposer(
-    value: unknown,
-    dispose?: (value: unknown) => void | Promise<void>,
-  ): (() => void | Promise<void>) | undefined {
-    if (dispose) {
-      return () => dispose(value);
+  #resourceFor(value: unknown): Resource {
+    if (!isObject(value)) {
+      return { dependencies: new Set() };
     }
 
-    if (!isObject(value)) {
-      return undefined;
+    let resource = this.#resources.get(value);
+
+    if (!resource) {
+      resource = { dependencies: new Set() };
+      this.#resources.set(value, resource);
+    }
+
+    return resource;
+  }
+
+  #configureDisposer(
+    resource: Resource,
+    value: unknown,
+    dispose?: (value: unknown) => void | Promise<void>,
+  ): void {
+    if (isObject(value) && this.#borrowed.has(value)) {
+      if (dispose) {
+        throw new InvalidDependencyError('Cannot configure disposal for a borrowed binding value');
+      }
+
+      return;
+    }
+
+    if (dispose) {
+      if (resource.explicitDispose && resource.explicitDispose !== dispose) {
+        throw new InvalidDependencyError('Conflicting disposers for the same resource');
+      }
+
+      resource.explicitDispose = dispose;
+      resource.dispose = () => dispose(value);
+      return;
+    }
+
+    if (!isObject(value) || resource.dispose) {
+      return;
     }
 
     const method = Reflect.get(value, Symbol.asyncDispose) ?? Reflect.get(value, Symbol.dispose);
 
     if (typeof method === 'function') {
-      return () => method.call(value);
+      resource.dispose = () => method.call(value);
     }
-
-    return undefined;
   }
 
   async #dispose(): Promise<void> {
@@ -385,56 +428,80 @@ export class Cyrene<
       await Promise.allSettled(this.#pending);
     }
 
-    const visited = new Set<Instance>();
-    const order: Instance[] = [];
+    const instances = new Map<Instance, Resource>();
 
-    const visit = (instance: Instance) => {
-      if (visited.has(instance)) {
-        return;
+    const collect = (instance: Instance): Resource => {
+      const existing = instances.get(instance);
+
+      if (existing) {
+        return existing;
       }
 
-      visited.add(instance);
+      const resource = instance.resource ?? { dependencies: new Set<Resource>() };
+      instances.set(instance, resource);
 
       for (const dependency of instance.dependencies) {
-        visit(dependency);
+        const child = collect(dependency);
+
+        if (child !== resource) {
+          resource.dependencies.add(child);
+        }
       }
 
-      order.push(instance);
+      return resource;
     };
 
     for (const instance of this.#instances) {
-      visit(instance);
+      collect(instance);
     }
 
-    const disposed = new Set<object>();
+    const visited = new Set<Resource>();
+    const order: Resource[] = [];
+
+    const visit = (resource: Resource) => {
+      if (visited.has(resource)) {
+        return;
+      }
+
+      visited.add(resource);
+
+      for (const dependency of resource.dependencies) {
+        visit(dependency);
+      }
+
+      order.push(resource);
+    };
+
+    for (const resource of instances.values()) {
+      visit(resource);
+    }
+
     const errors: unknown[] = [];
 
     // 后序遍历反转后先释放消费者, visited 同时避免延迟资源环重复遍历
-    for (const instance of order.reverse()) {
-      if (instance.state !== 'ready' || !instance.dispose) {
+    for (const resource of order.reverse()) {
+      if (!resource.dispose) {
         continue;
       }
 
-      if (isObject(instance.value)) {
-        if (disposed.has(instance.value)) {
-          continue;
-        }
-
-        disposed.add(instance.value);
-      }
-
       try {
-        await instance.dispose();
+        await resource.dispose();
       } catch (error) {
         errors.push(error);
       }
     }
 
-    for (const instance of order) {
+    for (const resource of order) {
+      resource.dependencies.clear();
+      resource.dispose = undefined;
+      resource.explicitDispose = undefined;
+    }
+
+    for (const instance of instances.keys()) {
       instance.dependencies.clear();
       instance.waitingFor.clear();
       instance.value = undefined;
-      instance.dispose = undefined;
+      instance.resource = undefined;
       instance.promise = Promise.resolve();
     }
 
@@ -442,6 +509,8 @@ export class Cyrene<
     this.#cache.clear();
     this.#instances.clear();
     this.#bindings.clear();
+    this.#borrowed.clear();
+    this.#resources.clear();
     this.#startup = undefined;
     this.#state = 'disposed';
 

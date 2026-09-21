@@ -1,4 +1,10 @@
-import { dependencyBrand, lazyBrand, refBrand, tokenBrand } from './brands.ts';
+import {
+  dependencyBrand,
+  lazyBrand,
+  refBrand,
+  tokenBrand,
+  RIPPLE_PROVIDERS_SYMBOL,
+} from './brands.ts';
 import { InvalidDependencyError } from './errors.ts';
 import type {
   DependencyIdentity,
@@ -92,6 +98,24 @@ export function entries(value: object): [PropertyKey, unknown][] {
   return Reflect.ownKeys(value)
     .filter(key => Object.prototype.propertyIsEnumerable.call(value, key))
     .map(key => [key, Reflect.get(value, key)]);
+}
+
+export function assertProviders(value: object): void {
+  for (const key of Reflect.ownKeys(value)) {
+    if (
+      key === RIPPLE_PROVIDERS_SYMBOL &&
+      Reflect.get(value, key) === true &&
+      !Object.prototype.propertyIsEnumerable.call(value, key)
+    ) {
+      continue;
+    }
+
+    if (typeof key !== 'string' || !Object.prototype.propertyIsEnumerable.call(value, key)) {
+      throw new InvalidDependencyError('Provider entries must have enumerable string keys');
+    }
+
+    assertResolvable(Reflect.get(value, key));
+  }
 }
 
 export function targetName(target: Resolvable | DependencyIdentity): string {

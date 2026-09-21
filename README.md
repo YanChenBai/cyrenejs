@@ -104,6 +104,30 @@ const users = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
 const audit = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
 ```
 
+## Provider 集合与运行时识别
+
+`defineProviders()` 在原对象上添加集合标识并返回它, 保留入口名称和实例类型推导。
+入口接受无参数依赖定义、Ref 或 Token; 参数化定义需要先创建 Ref。
+入口键必须是自身可枚举的字符串, Symbol 入口和不可枚举入口会报错。
+
+```ts
+import { defineProviders, isRipple, isRippleProviders, ripple } from 'cyrenejs';
+
+const logger = ripple({}, () => ({ name: 'logger' }));
+const providers = defineProviders({ logger });
+
+isRipple(logger); // true
+isRippleProviders(providers); // true
+// 直接传给 new Cyrene({ providers })
+```
+
+`ripple()` 和 `defineProviders()` 的返回值分别带有内部 Symbol 标识,
+通过 `isRipple()` 和 `isRippleProviders()` 判断, Symbol 不从包入口导出。
+标识不可枚举、不可修改、不可删除, 不会随对象展开复制或出现在解析结果中。
+`defineProviders()` 需要可添加属性的对象, 不冻结集合; 对同一集合可重复调用。
+判断方法检查自身标识严格等于 `true`, 不代表依赖已注册或可被当前运行时解析。
+v0 要求定义与 Cyrene 共享同一份运行时模块, 不支持跨包副本解析。
+
 ## 🍃 资源释放
 
 `await using` 会在离开作用域时释放 Cyrene, 也可以显式调用 `await app.dispose()`
@@ -112,6 +136,10 @@ const audit = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
 清理方法优先使用 `ripple` 配置中的 `dispose`, 其次是 `Symbol.asyncDispose` 和 `Symbol.dispose`
 
 通过 `bindings` 传入的外部值由原持有者管理, Cyrene 不会自动释放它们
+
+外部对象被 factory 原样返回时仍为借用资源, 对它配置显式 `dispose` 会使解析失败。
+多个定义返回同一对象时合并资源依赖并只释放一次; 显式清理优先于自动清理。
+共享对象的多个显式清理方法必须是同一函数引用, 否则后完成的解析报错, 已登记的资源仍会清理。
 
 <a id="development"></a>
 

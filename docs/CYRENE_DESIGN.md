@@ -32,6 +32,9 @@ await app.dispose();
 | API                                 | 职责                                   |
 | ----------------------------------- | -------------------------------------- |
 | ripple(inputs, factory, options?)   | 返回可调用的依赖定义                   |
+| defineProviders(providers)          | 约束并标记命名入口集合                 |
+| isRipple(value)                     | 判断是否带有 Ripple 定义标识           |
+| isRippleProviders(value)            | 判断是否带有入口集合标识               |
 | dependency(...params)               | 记录参数，创建新的 DependencyRef       |
 | token<T>(name)                      | 声明外部能力身份                       |
 | lazy(() => target)                  | 声明延迟依赖边                         |
@@ -79,6 +82,14 @@ await app.resolve(separateDatabase);
 
 providers 是命名入口映射，每个值必须是可解析目标：无参数 Dependency、DependencyRef 或 Token。start 初始化所有入口及其非 lazy 可达依赖，返回值保留入口名称并推导实例类型。入口名不参与 identity。
 
+入口使用自身可枚举的字符串键。类型层拒绝数字键和 Symbol 键；JavaScript 数字属性在运行时已转换为字符串，按字符串入口处理。运行时拒绝 Symbol 键与自身不可枚举入口，内部集合标识除外，避免静默忽略声明。依赖 inputs 仍支持 Symbol 键。
+
+defineProviders 在原对象上添加不可枚举、不可修改、不可删除的内部标识，返回原对象并保留类型推导。它校验入口形状及目标身份，不校验尚未绑定的依赖图，也不冻结集合。首次标记需要可扩展对象；已经标记的集合可以重复传入。组合使用对象展开后重新调用 defineProviders；标识本身不随展开复制。普通入口对象仍可直接传给 Cyrene。
+
+defineProviders 不是模块系统，不引入 imports、exports、注册顺序或独立生命周期。内部 RIPPLE_SYMBOL 与 RIPPLE_PROVIDERS_SYMBOL 不从包入口导出；isRipple 与 isRippleProviders 只判断自身标识严格等于 true，不表示目标可由当前运行时解析。
+
+v0 要求依赖定义、Ref、Token、LazyRef 与 Cyrene 共享同一份运行时模块。Symbol.for 标识可以跨副本识别，但 metadata 不跨副本共享；跨副本解析不受支持。插件应复用宿主的 cyrenejs 依赖。
+
 bindings 专门提供 Token 的外部实现：
 
 ```ts
@@ -102,7 +113,7 @@ interface CyreneOptions<
   TProviders extends DependencyEntries = {},
   TBindings extends readonly Binding[] = readonly Binding[],
 > {
-  providers?: TProviders;
+  providers?: TProviders & ValidProviders<TProviders>;
   bindings?: TBindings & ValidBindings<TBindings>;
 }
 class Cyrene<
@@ -169,11 +180,15 @@ interface Lazy<T> {
 
 ## 9. Ownership 与 dispose
 
-谁创建谁持有，外部绑定 value 不自动释放。每个受管理实例最多释放一次，即使多个 factory 返回同一对象。
+factory 返回值由当前 Cyrene 管理，但 bindings.value 中的对象或函数始终视为借用资源，即使绑定未使用、或 factory 原样返回同一引用，也不自动释放。对借用对象配置显式 dispose 会使该次解析失败，cause 为 InvalidDependencyError，不转移所有权。仅比较顶层对象身份，不递归推断包装对象、嵌套字段或 Promise 解包后的资源归属；外部资源应直接作为 value 提供，异步构造使用 dependency binding。
+
+对象和函数按返回值引用合并为资源节点，同一资源最多清理一次；原始值按每次实例记录分别清理。合并所有别名的实际依赖边后，再计算资源释放顺序，避免某个别名导致资源早于其他消费者被释放。
 
 释放优先级：options.dispose → Symbol.asyncDispose → Symbol.dispose，只执行一个。
 
-dispose 首次调用立即禁止新的 start/resolve，等待已经开始的初始化结束，再按实际依赖边先消费者后依赖释放。lazy 激活造成资源环时无法严格拓扑排序，确定性打破环，仍每个实例只释放一次。
+同一资源的显式 dispose 优先于所有别名的自动清理方法，与初始化完成顺序无关。多个别名使用同一显式函数引用合法；不同显式函数引用视为冲突，后完成的解析以 ResolutionError 失败，cause 为 InvalidDependencyError。已登记的清理方法保留，冲突别名的依赖边也保留，最终仍统一清理。不能依赖并发顺序选择冲突函数，调用者应复用同一个 disposer。
+
+dispose 首次调用立即禁止新的 start/resolve，等待已经开始的初始化结束，再按合并后的实际资源依赖边先消费者后依赖释放。lazy 激活或对象别名合并造成资源环时无法严格拓扑排序，确定性打破环，仍每个资源只释放一次。
 
 清理失败继续释放其他资源，最后抛 AggregateError。重复 dispose 返回相同 Promise，包括失败结果；完成后清空缓存与持有引用。释放期间和之后解析抛 DisposedError。
 
@@ -190,5 +205,7 @@ inspect 返回 nodes/edges，节点包括 Dependency、Ref、Token，边区分�
 实现 callable Dependency、Ref、Token、binding、lazy、命名入口启动、按需解析、validate/inspect、两种 lifetime、并发去重、失败重试和资源释放。
 
 暂不实现插件 hooks、DevTools、自动命名 transform、子作用域、动态入口、装饰器、扫描、Proxy、可选 Token 或框架适配器。
+
+每次 resolve 都会重新校验目标图，包括 lazy 可达图；暂不缓存校验结果。transient 创建的资源会被当前 Cyrene 持有直到整体释放，高频短任务应使用独立 Cyrene 控制生命周期。dispose 不提供超时或取消，未结束的初始化会延长清理等待；这两类优化需根据实际负载另行设计。
 
 测试覆盖类型推导、普通值函数、identity、入口统一校验、未使用的绑定、并发失败、lazy 循环、资源归属/顺序及初始化与释放竞争。使用 vp check、vp test、vp pack 验证，vp run ready 聚合执行。

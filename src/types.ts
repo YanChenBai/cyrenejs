@@ -1,4 +1,11 @@
-import type { dependencyBrand, lazyBrand, refBrand, tokenBrand } from './brands.ts';
+import type {
+  dependencyBrand,
+  lazyBrand,
+  refBrand,
+  tokenBrand,
+  RIPPLE_SYMBOL,
+  RIPPLE_PROVIDERS_SYMBOL,
+} from './brands.ts';
 
 export type Lifetime = 'singleton' | 'transient';
 
@@ -13,8 +20,9 @@ export interface DependencyIdentity<T = unknown, P extends unknown[] = unknown[]
   readonly [dependencyBrand]: { readonly result?: T; readonly params: P };
 }
 
-export type Dependency<T, P extends unknown[] = []> = DependencyIdentity<T, P> &
-  ((...params: P) => DependencyRef<T>);
+export type Dependency<T, P extends unknown[] = []> = DependencyIdentity<T, P> & {
+  readonly [RIPPLE_SYMBOL]: true;
+} & ((...params: P) => DependencyRef<T>);
 
 export interface DependencyRef<T = unknown> {
   readonly [refBrand]: { readonly result?: T };
@@ -38,6 +46,15 @@ export interface Lazy<T> {
 export type Resolvable<T = unknown> = Dependency<T, []> | DependencyRef<T> | Token<T>;
 export type DependencyEntries = Record<string, Resolvable>;
 
+export type ValidProviders<T> = Record<
+  Exclude<keyof T, string | typeof RIPPLE_PROVIDERS_SYMBOL>,
+  never
+>;
+
+export type RippleProviders<T extends DependencyEntries = DependencyEntries> = T & {
+  readonly [RIPPLE_PROVIDERS_SYMBOL]: true;
+};
+
 export type InferInput<T> =
   T extends DependencyIdentity<infer R>
     ? R
@@ -47,7 +64,9 @@ export type InferInput<T> =
         ? Lazy<R>
         : T;
 
-export type ResolveInputs<T> = { [K in keyof T]: InferInput<T[K]> };
+export type ResolveInputs<T> = {
+  [K in keyof T as K extends typeof RIPPLE_PROVIDERS_SYMBOL ? never : K]: InferInput<T[K]>;
+};
 export type ResolveEntries<T extends DependencyEntries> = ResolveInputs<T>;
 
 // 有参数的定义必须先创建 Ref, 包括仅有可选参数或 rest 参数的情况
@@ -72,7 +91,7 @@ export interface CyreneOptions<
   T extends DependencyEntries = {},
   B extends readonly Binding[] = readonly Binding[],
 > {
-  providers?: T;
+  providers?: T & ValidProviders<T>;
   bindings?: B & ValidBindings<B>;
 }
 

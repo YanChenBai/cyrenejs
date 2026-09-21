@@ -37,6 +37,7 @@
   "scripts": {
     "prepare": "vp config",
     "prepublishOnly": "vp pack",
+    "build": "vp pack",
     "ready": "vp check && vp test run && vp pack",
     "release": "vp check && vp test && changelogen --release"
   },

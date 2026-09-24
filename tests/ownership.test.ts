@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 
-import { Cyrene, InvalidDependencyError, lazy, ripple, token } from '../src/index.ts';
+import { Cyrene, InvalidDependencyError, lazy, ripple } from '../src/index.ts';
 import { deferred } from './helpers.ts';
 
 describe('资源归属与别名', () => {
@@ -29,7 +29,7 @@ describe('资源归属与别名', () => {
       return value;
     });
 
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { consumer, alias } });
     const result = await app.resolve(consumer);
     await result.later.resolve();
     const pending = app.resolve(alias);
@@ -104,7 +104,7 @@ describe('资源归属与别名', () => {
     const a = ripple({}, () => value);
     const b = ripple({}, () => value, { dispose: explicit });
     const c = ripple({}, () => value, { dispose: explicit });
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { a, b, c } });
 
     for (const target of explicitFirst ? [b, a, c] : [a, b, c]) {
       await app.resolve(target);
@@ -133,7 +133,7 @@ describe('资源归属与别名', () => {
 
     const first = ripple({}, () => value, { dispose: cleanup });
     const second = ripple({ dependency }, () => value, { dispose: conflicting });
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { first, second } });
     await app.resolve(first);
     await expect(app.resolve(second)).rejects.toMatchObject({
       name: 'ResolutionError',
@@ -144,58 +144,27 @@ describe('资源归属与别名', () => {
     expect(conflicting).not.toHaveBeenCalled();
   });
 
-  it('借用对象及函数经别名转发后仍不自动释放, 未使用绑定也保留归属', async () => {
+  it('工厂返回的对象和函数按资源管理, 经别名转发只释放一次', async () => {
     const dispose = vi.fn();
     const object = { [Symbol.dispose]: dispose };
     const fn = Object.assign(() => {}, { [Symbol.dispose]: dispose });
-    const External = token<typeof object>('External');
-    const Unused = token<typeof fn>('Unused');
-    const forwarded = ripple({ external: External }, ({ external }) => external);
+    const source = ripple({}, () => object);
+    const forwarded = ripple({ source }, ({ source }) => source);
     const alias = ripple({ forwarded }, ({ forwarded }) => forwarded);
-
-    const app = new Cyrene({
-      ripples: { alias, fn: ripple({}, () => fn) },
-      bindings: [
-        { token: External, value: object },
-        { token: Unused, value: fn },
-      ],
-    });
-
-    const result = await app.start();
-    expect(result.alias).toBe(object);
-    expect(result.fn).toBe(fn);
+    const app = new Cyrene({ ripples: [source, alias, ripple({}, () => fn)] });
+    await app.start();
+    expect(await app.resolve(source)).toBe(object);
+    expect(await app.resolve(alias)).toBe(object);
     await app.dispose();
-    expect(dispose).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledTimes(2);
   });
 
-  it('拒绝显式接管借用资源, 仍释放已创建的其他依赖', async () => {
-    const automatic = vi.fn();
-    const explicit = vi.fn();
-    const cleanup = vi.fn();
-    const value = { [Symbol.dispose]: automatic };
-    const External = token<typeof value>('External');
-    const other = ripple({}, () => ({}), { dispose: cleanup });
-
-    const service = ripple({ external: External, other }, ({ external }) => external, {
-      dispose: explicit,
-    });
-
-    const app = new Cyrene({ ripples: { service }, bindings: [{ token: External, value }] });
-    await expect(app.start()).rejects.toMatchObject({ cause: expect.any(InvalidDependencyError) });
-    await app.dispose();
-    expect(automatic).not.toHaveBeenCalled();
-    expect(explicit).not.toHaveBeenCalled();
-    expect(cleanup).toHaveBeenCalledOnce();
-  });
-
-  it('原始值不按相等值合并资源, 外部原始值不影响工厂清理', async () => {
+  it('原始值不按相等值合并资源', async () => {
     const dispose = vi.fn();
-    const External = token<number>('External');
     const service = ripple({}, () => 1, { lifetime: 'transient', dispose });
 
     const app = new Cyrene({
       ripples: { a: service, b: service },
-      bindings: [{ token: External, value: 1 }],
     });
 
     await app.start();

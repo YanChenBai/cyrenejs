@@ -6,7 +6,6 @@ export class CyreneError extends Error {
 }
 
 export class CircularDependencyError extends CyreneError {}
-export class MissingBindingError extends CyreneError {}
 export class InvalidDependencyError extends CyreneError {}
 export class DisposedError extends CyreneError {}
 

@@ -4,11 +4,10 @@ import {
   CircularDependencyError,
   Cyrene,
   DisposedError,
-  MissingBindingError,
+  InvalidDependencyError,
   ResolutionError,
   lazy,
   ripple,
-  token,
 } from '../src/index.ts';
 import type { Dependency, Lazy } from '../src/index.ts';
 import { deferred } from './helpers.ts';
@@ -31,16 +30,17 @@ describe('延迟解析与资源释放', () => {
 
     const b: Dependency<B> = ripple({ a }, factory, { dispose: disposeB });
     const app = new Cyrene({ ripples: { a } });
-    const result = await app.start();
+    await app.start();
+    const result = await app.resolve(a);
     expect(factory).not.toHaveBeenCalled();
-    const instanceB = await result.a.b.resolve();
-    expect(instanceB.a).toBe(result.a);
-    expect(await result.a.b.resolve()).toBe(instanceB);
+    const instanceB = await result.b.resolve();
+    expect(instanceB.a).toBe(result);
+    expect(await result.b.resolve()).toBe(instanceB);
     await app.dispose();
     await app.dispose();
-    expect(disposeA).toHaveBeenCalledExactlyOnceWith(result.a);
+    expect(disposeA).toHaveBeenCalledExactlyOnceWith(result);
     expect(disposeB).toHaveBeenCalledExactlyOnceWith(instanceB);
-    await expect(result.a.b.resolve()).rejects.toBeInstanceOf(DisposedError);
+    await expect(result.b.resolve()).rejects.toBeInstanceOf(DisposedError);
   });
 
   it('检测并发启动入口之间的延迟等待环', async () => {
@@ -76,11 +76,11 @@ describe('延迟解析与资源释放', () => {
   });
 
   it('校验延迟依赖目标, 不提前初始化', async () => {
-    const missing = token<number>('Missing');
+    const missing = {} as never;
     const factory = vi.fn(() => 1);
     const root = ripple({ later: lazy(() => missing) }, factory);
     const app = new Cyrene({ ripples: { root } });
-    await expect(app.start()).rejects.toBeInstanceOf(MissingBindingError);
+    await expect(app.start()).rejects.toBeInstanceOf(InvalidDependencyError);
     expect(factory).not.toHaveBeenCalled();
     await app.dispose();
   });
@@ -97,7 +97,7 @@ describe('延迟解析与资源释放', () => {
     );
 
     const service = ripple({ database }, () => 1, { debugName: 'Users' });
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { service } });
     await expect(app.resolve(service)).rejects.toMatchObject({
       path: ['Users', 'Database'],
       cause,
@@ -108,7 +108,7 @@ describe('延迟解析与资源释放', () => {
   it('保留普通 Promise 输入, 不自动等待', async () => {
     const pending = deferred<number>();
     const service = ripple({ pending: pending.promise }, ({ pending }) => ({ pending }));
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { service } });
     const result = await app.resolve(service);
     expect(result.pending).toBe(pending.promise);
     pending.resolve(1);
@@ -194,7 +194,7 @@ describe('延迟解析与资源释放', () => {
       },
     });
 
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { service } });
     const handle = await app.resolve(service);
     await handle.resolve();
     await app.dispose();
@@ -203,7 +203,7 @@ describe('延迟解析与资源释放', () => {
 
   it('清理失败后继续释放, 遵守外部资源归属与清理优先级', async () => {
     const externalDispose = vi.fn();
-    const External = token<object>('External');
+    const external = { [Symbol.dispose]: externalDispose };
     const order: string[] = [];
     const syncDispose = vi.fn();
     const asyncDispose = vi.fn(async () => {});
@@ -213,7 +213,7 @@ describe('延迟解析与资源释放', () => {
       [Symbol.asyncDispose]: asyncDispose,
     }));
 
-    const broken = ripple({ resource, external: External }, () => ({}), {
+    const broken = ripple({ resource, external }, () => ({}), {
       dispose: () => {
         order.push('broken');
         throw new Error('cleanup');
@@ -222,7 +222,6 @@ describe('延迟解析与资源释放', () => {
 
     const app = new Cyrene({
       ripples: { broken },
-      bindings: [{ token: External, value: { [Symbol.dispose]: externalDispose } }],
     });
 
     await app.start();

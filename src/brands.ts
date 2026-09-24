@@ -1,6 +1,6 @@
-export const dependencyBrand = Symbol('cyrene.dependency');
-export const refBrand = Symbol('cyrene.ref');
-export const tokenBrand = Symbol('cyrene.token');
-export const lazyBrand = Symbol('cyrene.lazy');
-export const RIPPLE_SYMBOL = Symbol.for('cyrene.ripple');
-export const RIPPLES_SYMBOL = Symbol.for('cyrene.ripples');
+export const DEPENDENCY_BRAND = Symbol('cyrene.dependency');
+export const REF_BRAND = Symbol('cyrene.ref');
+export const LAZY_BRAND = Symbol('cyrene.lazy');
+
+export const RIPPLE_BRAND = Symbol.for('cyrene.ripple');
+export const POEM_BRAND = Symbol.for('cyrene.poem');

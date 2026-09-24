@@ -1,10 +1,13 @@
-import { Cyrene, defineRipples, formatGraph, lazy, ripple, token } from '../../src/index.ts';
+import { Cyrene, poem, formatGraph, lazy, ripple } from '../../src/index.ts';
 
 const write = (message: string) => process.stdout.write(`${message}\n`);
-const Config = token<{ databaseUrl: string; logLevel: string }>('Config');
+
+const config = ripple({}, () => ({ databaseUrl: 'memory://demo', logLevel: 'info' }), {
+  debugName: 'Config',
+});
 
 const logger = ripple(
-  { config: Config },
+  { config },
   ({ config }, scope: string) => ({
     info: (message: string) => write(`[${config.logLevel}][${scope}] ${message}`),
   }),
@@ -15,7 +18,7 @@ const logger = ripple(
 const appLogger = logger('demo');
 
 const database = ripple(
-  { config: Config },
+  { config },
   ({ config }) => {
     write(`连接数据库: ${config.databaseUrl}`);
     return { users: ['Alice', 'Bob'] };
@@ -60,8 +63,7 @@ const audit = ripple(
 );
 
 const app = new Cyrene({
-  ripples: defineRipples({ users, audit }),
-  bindings: [{ token: Config, value: { databaseUrl: 'memory://demo', logLevel: 'info' } }],
+  ripples: poem({ users, audit }),
 });
 
 try {
@@ -70,11 +72,13 @@ try {
   write('\n=== 单个入口 ===');
   write(formatGraph(app.inspect(users)));
   write('\n=== 启动 ===');
-  const services = await app.start();
-  services.users.list();
-  services.audit.record();
+  await app.start();
+  const userService = await app.resolve(users);
+  const auditService = await app.resolve(audit);
+  userService.list();
+  auditService.record();
   write('\n=== 按需解析报表 ===');
-  const reports = await services.users.report.resolve();
+  const reports = await userService.report.resolve();
   write(`报表用户数: ${reports.count()}`);
 } finally {
   write('\n=== 释放资源 ===');

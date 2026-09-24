@@ -1,11 +1,40 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vite-plus/test';
 
-import { Cyrene, ripple, token } from '../src/index.ts';
-import type { Binding, DependencyRef } from '../src/index.ts';
+import { Cyrene, ripple } from '../src/index.ts';
+import type { DependencyRef } from '../src/index.ts';
 
 describe('依赖定义与输入', () => {
+  it('无依赖工厂可省略 inputs, 保留 options、参数与异步结果推导', async () => {
+    const dispose = vi.fn();
+    const factory = vi.fn(async (name: string, retry: number = 2) => ({ name, retry }));
+    const service = ripple(factory, { debugName: 'Service', dispose });
+    const ref = service('users');
+
+    expect(factory).not.toHaveBeenCalled();
+    const app = new Cyrene({ ripples: { ref } });
+    await app.start();
+    const result = await app.resolve(ref);
+    expectTypeOf(result.name).toEqualTypeOf<string>();
+    expectTypeOf(result.retry).toEqualTypeOf<number>();
+    expect(result).toEqual({ name: 'users', retry: 2 });
+    expect(factory).toHaveBeenCalledWith('users');
+    await app.dispose();
+    expect(dispose).toHaveBeenCalledOnce();
+
+    const checkTypes = () => {
+      // @ts-expect-error 有业务参数的定义必须先创建 Ref
+      new Cyrene({ ripples: { service } });
+      // @ts-expect-error 无依赖写法不接受第三个参数
+      ripple(() => 1, {}, {});
+      // @ts-expect-error Ripple 暂不直接支持 class 构造器
+      ripple(class Service {});
+    };
+
+    expectTypeOf(checkTypes).toBeFunction();
+  });
+
   it('推导参数和异步实例类型, 声明时不执行工厂', async () => {
-    const Config = token<{ prefix: string }>('Config');
+    const config = ripple({}, () => ({ prefix: 'test:' }));
 
     const factory = vi.fn(
       async ({ config }: { config: { prefix: string } }, name: string, count: number = 1) => ({
@@ -14,20 +43,20 @@ describe('依赖定义与输入', () => {
       }),
     );
 
-    const service = ripple({ config: Config }, factory);
+    const service = ripple({ config }, factory);
     const ref = service('users', 2);
     expect(factory).not.toHaveBeenCalled();
 
     const app = new Cyrene({
       ripples: { users: ref },
-      bindings: [{ token: Config, value: { prefix: 'test:' } }],
     });
 
     expect(factory).not.toHaveBeenCalled();
-    const result = await app.start();
-    expectTypeOf(result.users).toEqualTypeOf<{ label: string; count: number }>();
-    expect(result.users).toEqual({ label: 'test:users', count: 2 });
-    expect(await app.resolve(ref)).toBe(result.users);
+    await app.start();
+    const result = await app.resolve(ref);
+    expectTypeOf(result).toEqualTypeOf<{ label: string; count: number }>();
+    expect(result).toEqual({ label: 'test:users', count: 2 });
+    expect(await app.resolve(ref)).toBe(result);
     await app.dispose();
   });
 
@@ -35,10 +64,13 @@ describe('依赖定义与输入', () => {
     const symbol = Symbol('input');
     const callback = vi.fn();
     class Example {}
+
     const hidden = ripple({}, vi.fn());
+
     const nested = { hidden };
     const factory = ripple({ callback, nested, Example, [symbol]: 42 }, values => values);
-    const app = new Cyrene();
+    const app = new Cyrene({ ripples: { factory } });
+    await app.start();
     const result = await app.resolve(factory);
     expect(result.callback).toBe(callback);
     expect(result.nested).toBe(nested);
@@ -46,7 +78,7 @@ describe('依赖定义与输入', () => {
     expect(result[symbol]).toBe(42);
     expect(callback).not.toHaveBeenCalled();
     const fn = ripple({}, () => callback);
-    expect(await app.resolve(fn)).toBe(callback);
+    expect(await app.add(fn)).toBe(callback);
     await app.dispose();
   });
 
@@ -54,8 +86,8 @@ describe('依赖定义与输入', () => {
     const service = ripple({}, () => ({}));
     const a = service();
     const b = service();
-    const app = new Cyrene();
-    const other = new Cyrene();
+    const app = new Cyrene({ ripples: { service, a, b } });
+    const other = new Cyrene({ ripples: { service } });
     const instance = await app.resolve(service);
     expect(await app.resolve(service)).toBe(instance);
     expect(await other.resolve(service)).not.toBe(instance);
@@ -67,24 +99,26 @@ describe('依赖定义与输入', () => {
   });
 
   it('快照保存声明, 支持外部 undefined 和函数值', async () => {
-    const Value = token<undefined>('Value');
-    const Handler = token<() => void>('Handler');
     const handler = vi.fn();
     const inputs = { value: 1 };
     const source = ripple(inputs, ({ value }) => value);
     inputs.value = 2;
-    const ripples = { value: source, empty: Value, handler: Handler };
-    const binding = { token: Handler, value: handler };
+
+    const ripples = {
+      value: source,
+      empty: ripple({}, () => undefined),
+      handler: ripple({}, () => handler),
+    };
 
     const app = new Cyrene({
       ripples,
-      bindings: [{ token: Value, value: undefined }, binding],
     });
 
     ripples.value = ripple({}, () => 3);
-    binding.value = vi.fn();
-    const result = await app.start();
-    expect(result).toEqual({ value: 1, empty: undefined, handler });
+    await app.start();
+    expect(await app.add(source)).toBe(1);
+    expect(await app.resolve(ripples.empty)).toBeUndefined();
+    expect(await app.resolve(ripples.handler)).toBe(handler);
     expect(handler).not.toHaveBeenCalled();
     await app.dispose();
   });
@@ -94,7 +128,6 @@ describe('依赖定义与输入', () => {
     const optional = ripple({}, (_deps, value = 1) => value);
     const rest = ripple({}, (_deps, ...values: number[]) => values.length);
     const mixed = ripple({}, (_deps, name: string, retry = 3) => ({ name, retry }));
-    const Count = token<number>('Count');
     expectTypeOf(optional()).toEqualTypeOf<DependencyRef<number>>();
     expectTypeOf(rest(1, 2)).toEqualTypeOf<DependencyRef<number>>();
     expectTypeOf(mixed('users')).toEqualTypeOf<DependencyRef<{ name: string; retry: number }>>();
@@ -116,17 +149,14 @@ describe('依赖定义与输入', () => {
       void new Cyrene().resolve(rest);
       // @ts-expect-error 参数化定义不能直接注入
       ripple({ required }, () => 1);
-      // @ts-expect-error 精确绑定类型检查
-      const bad: Binding<number> = { token: Count, value: 'no' };
-      void bad;
-      // @ts-expect-error 异构 bindings 也应校验 Token 与实现的关系
-      new Cyrene({ bindings: [{ token: Count, value: 'no' }] });
-      // @ts-expect-error dependency binding 的实例类型必须匹配
-      new Cyrene({ bindings: [{ token: Count, dependency: ripple({}, () => 'no') }] });
+      // @ts-expect-error 已移除 bindings
+      new Cyrene({ bindings: [] });
       // @ts-expect-error 已移除 scoped
       ripple({}, () => 1, { lifetime: 'scoped' });
-      // @ts-expect-error 已移除 add
-      new Cyrene().add({});
+      // @ts-expect-error ripple 暂不直接接受 class 构造器
+      ripple({}, class Service {});
+      // @ts-expect-error add 只接受 Ripple 或 Ref
+      void new Cyrene().add({});
       // @ts-expect-error 已移除 createScope
       new Cyrene().createScope();
     };

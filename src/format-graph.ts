@@ -73,5 +73,18 @@ export function formatGraph(graph: DependencyGraph): string {
     visit(id, '', '');
   }
 
+  for (const node of graph.nodes) {
+    if (!node.retained || expanded.has(node.id)) {
+      continue;
+    }
+
+    if (lines.length) {
+      lines.push('');
+    }
+
+    lines.push('[retained]');
+    visit(node.id, '', '');
+  }
+
   return lines.join('\n');
 }

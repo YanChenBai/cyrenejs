@@ -1,24 +1,21 @@
 import { expect, it, vi } from 'vite-plus/test';
 
-import { Cyrene, formatGraph, lazy, ripple, token } from '../src/index.ts';
+import { Cyrene, formatGraph, lazy, ripple } from '../src/index.ts';
 import type { Dependency, Lazy } from '../src/index.ts';
 
-it('绘制命名节点、Token、共享依赖和仍作为入口的子节点', () => {
-  const Config = token<string>('Config');
+it('绘制命名节点、共享依赖和仍作为入口的子节点', () => {
+  const Config = ripple({}, () => 'secret', { debugName: 'Config' });
   const factory = vi.fn(() => ({}));
   const database = ripple({ config: Config }, factory, { debugName: 'Database' });
   const users = ripple({ database }, factory, { debugName: 'Users' });
 
   const app = new Cyrene({
     ripples: { users, database },
-    bindings: [{ token: Config, value: 'secret' }],
   });
 
   const graph = app.inspect();
   expect(graph.roots).toEqual([0, 1]);
-  expect(formatGraph(graph)).toBe(
-    'Users #0\n└─ Database #1\n   └─ Config #2 [token]\n\n↗ Database #1',
-  );
+  expect(formatGraph(graph)).toBe('Users #0\n└─ Database #1\n   └─ Config #2\n\n↗ Database #1');
   expect(factory).not.toHaveBeenCalled();
   expect(app.inspect(database).roots).toEqual([0]);
 });
@@ -50,4 +47,20 @@ it('空图和重复入口有确定输出', () => {
   const graph = new Cyrene({ ripples: { first: service, second: service } }).inspect();
   expect(graph.roots).toEqual([0]);
   expect(formatGraph(graph)).toBe('Service #0');
+});
+
+it('作为 Ref 定义显示过的保留节点仍展开其运行依赖', async () => {
+  const leaf = ripple(() => 1, { debugName: 'Leaf' });
+  const service = ripple({ leaf }, () => 1, { debugName: 'Service' });
+  const ref = service();
+  const root = ripple({ service }, () => 1);
+  const app = new Cyrene({ ripples: { ref, root } });
+  await app.start();
+  await app.remove(root);
+  const graph = app.inspect();
+  expect(graph.nodes.find(node => node.name === 'Service')?.retained).toBe(true);
+  expect(formatGraph(graph)).toContain('[retained]');
+  expect(formatGraph(graph)).toContain('Service #');
+  expect(formatGraph(graph)).toContain('↗ Leaf');
+  await app.dispose();
 });

@@ -4,18 +4,16 @@ import {
   CircularDependencyError,
   Cyrene,
   InvalidDependencyError,
-  MissingBindingError,
   lazy,
   ripple,
-  token,
 } from '../src/index.ts';
-import type { Binding } from '../src/index.ts';
+import { getDefinition } from '../src/metadata.ts';
 import { deferred } from './helpers.ts';
 
-describe('启动, 绑定与依赖图', () => {
+describe('启动与依赖图', () => {
   it('执行工厂前统一校验全部入口', async () => {
     const factory = vi.fn(() => 1);
-    const missing = token<number>('Missing');
+    const missing = lazy(() => 1 as never);
 
     const app = new Cyrene({
       ripples: {
@@ -24,84 +22,46 @@ describe('启动, 绑定与依赖图', () => {
       },
     });
 
-    await expect(app.start()).rejects.toBeInstanceOf(MissingBindingError);
+    await expect(app.start()).rejects.toBeInstanceOf(InvalidDependencyError);
     expect(factory).not.toHaveBeenCalled();
     await app.dispose();
   });
 
-  it('跳过未使用的绑定, 复用绑定目标的实例身份', async () => {
-    const Service = token<object>('Service');
-    const Unused = token<object>('Unused');
+  it('跳过未使用的定义, 复用依赖目标的实例身份', async () => {
     const service = ripple({}, () => ({}));
     const unused = vi.fn(() => ({}));
-
-    const app = new Cyrene({
-      ripples: { service: Service, direct: service },
-      bindings: [
-        { token: Service, dependency: service },
-        { token: Unused, dependency: ripple({}, unused) },
-      ],
-    });
-
-    const result = await app.start();
-    expect(result.service).toBe(result.direct);
+    ripple({}, unused);
+    const app = new Cyrene({ ripples: { service, direct: service } });
+    await app.start();
+    const result = await app.resolve(service);
+    expect(await app.resolve(service)).toBe(result);
     expect(unused).not.toHaveBeenCalled();
     await app.dispose();
   });
 
-  it('拒绝重复, 歧义和非法绑定', () => {
-    const Value = token<number>('Value');
-    expect(
-      () =>
-        new Cyrene({
-          bindings: [
-            { token: Value, value: 1 },
-            { token: Value, value: 2 },
-          ],
-        }),
-    ).toThrow(InvalidDependencyError);
-    expect(
-      () =>
-        new Cyrene({
-          bindings: [
-            {
-              token: Value,
-              value: 1,
-              dependency: ripple({}, () => 2),
-            } as unknown as Binding,
-          ],
-        }),
-    ).toThrow(InvalidDependencyError);
+  it('拒绝非法入口', () => {
     expect(() => new Cyrene({ ripples: { invalid: 1 } as never })).toThrow(InvalidDependencyError);
-    const SameName = token<number>('Value');
-
-    const app = new Cyrene({
-      bindings: [
-        { token: Value, value: 1 },
-        { token: SameName, value: 2 },
-      ],
-    });
-
-    expect(() => app.validate(Value)).not.toThrow();
   });
 
-  it('检测跨绑定的强依赖环, 不执行工厂', () => {
-    const A = token<number>('A');
-    const B = token<number>('B');
-    const factory = vi.fn(({ value }: { value: number }) => value);
-    const a = ripple({ value: B }, factory);
-    const b = ripple({ value: A }, factory);
-
-    const app = new Cyrene({
-      ripples: { a },
-      bindings: [
-        { token: A, dependency: a },
-        { token: B, dependency: b },
-      ],
-    });
-
+  it('检测强依赖环, 不执行工厂', () => {
+    const factory = vi.fn(() => 1);
+    const a = ripple({}, factory);
+    const b = ripple({ a }, factory);
+    // 定义快照不可修改, 仅在内部测试中构造强依赖环
+    getDefinition(a).inputs = { b };
+    const app = new Cyrene({ ripples: { a } });
     expect(() => app.validate()).toThrow(CircularDependencyError);
     expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('相同节点同时以 lazy 和强依赖出现时仍按强依赖检测环', () => {
+    const a = ripple({}, () => 1);
+    const b = ripple({ a }, () => 2);
+    // 故意把强依赖放在 lazy 前, 覆盖双向邻接索引的合并规则。
+    getDefinition(a).inputs = { direct: b, deferred: lazy(() => b) };
+    const app = new Cyrene({ ripples: { a } });
+
+    expect(() => app.validate()).toThrow(CircularDependencyError);
   });
 
   it('查看 Ref 与延迟依赖边, 不触发初始化', () => {
@@ -126,9 +86,8 @@ describe('启动, 绑定与依赖图', () => {
     expect(app.start()).toBe(startup);
     const resolved = app.resolve(dependency);
     gate.resolve({});
-    const result = await startup;
-    expect(await resolved).toBe(result.first);
-    expect(result.first).toBe(result.second);
+    expect(await startup).toBeUndefined();
+    expect(await resolved).toBe(await app.resolve(dependency));
     expect(factory).toHaveBeenCalledTimes(1);
     await app.dispose();
   });
@@ -155,30 +114,32 @@ describe('启动, 绑定与依赖图', () => {
     await app.dispose();
   });
 
-  it('复用 transient 启动结果, 显式解析时创建新实例', async () => {
+  it('重复启动不再初始化 transient, 显式解析时创建新实例', async () => {
     const factory = vi.fn(() => ({}));
     const dependency = ripple({}, factory, { lifetime: 'transient' });
     const app = new Cyrene({ ripples: { dependency } });
-    const result = await app.start();
-    expect(await app.start()).toBe(result);
-    expect(await app.resolve(dependency)).not.toBe(result.dependency);
-    expect(await app.resolve(dependency)).not.toBe(result.dependency);
+    expect(await app.start()).toBeUndefined();
+    expect(await app.start()).toBeUndefined();
+    expect(factory).toHaveBeenCalledOnce();
+    const first = await app.resolve(dependency);
+    expect(await app.resolve(dependency)).not.toBe(first);
     expect(factory).toHaveBeenCalledTimes(3);
     await app.dispose();
   });
 
-  it('无入口启动后仍可按需解析, 不改变启动结果', async () => {
+  it('无入口启动后通过 add 接入新目标, 不改变启动结果', async () => {
     const dispose = vi.fn();
     const factory = vi.fn(() => ({}));
     const service = ripple({}, factory, { dispose });
     const app = new Cyrene();
     const startup = app.start();
-    expect(await startup).toEqual({});
+    expect(await startup).toBeUndefined();
     expect(factory).not.toHaveBeenCalled();
-    const instance = await app.resolve(service);
+    await expect(app.resolve(service)).rejects.toBeInstanceOf(InvalidDependencyError);
+    const instance = await app.add(service);
     expect(await app.resolve(service)).toBe(instance);
     expect(app.start()).toBe(startup);
-    expect(await app.start()).toEqual({});
+    expect(await app.start()).toBeUndefined();
     expect(factory).toHaveBeenCalledOnce();
     await app.dispose();
     expect(dispose).toHaveBeenCalledExactlyOnceWith(instance);
@@ -202,24 +163,21 @@ describe('启动, 绑定与依赖图', () => {
     });
 
     const app = new Cyrene({ ripples: { service } });
-    const result = await app.start();
-    expect(await app.resolve(service)).toBe(result.service);
-    expect(await app.resolve(service)).toBe(result.service);
+    await app.start();
+    const result = await app.resolve(service);
+    expect(await app.resolve(service)).toBe(result);
+    expect(await app.resolve(service)).toBe(result);
     expect(factory).toHaveBeenCalledOnce();
     const first = await app.resolve(resource);
     const second = await app.resolve(resource);
-    expect(first).not.toBe(result.service.resource);
-    expect(second).not.toBe(result.service.resource);
+    expect(first).not.toBe(result.resource);
+    expect(second).not.toBe(result.resource);
     expect(second).not.toBe(first);
     expect(factory).toHaveBeenCalledTimes(3);
     expect(released).toEqual([]);
     await app.dispose();
     expect(released).toHaveLength(4);
-    expect(new Set(released)).toEqual(
-      new Set([result.service, result.service.resource, first, second]),
-    );
-    expect(released.indexOf(result.service)).toBeLessThan(
-      released.indexOf(result.service.resource),
-    );
+    expect(new Set(released)).toEqual(new Set([result, result.resource, first, second]));
+    expect(released.indexOf(result)).toBeLessThan(released.indexOf(result.resource));
   });
 });

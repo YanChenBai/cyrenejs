@@ -1,92 +1,70 @@
 ---
 name: cyrenejs
-description: Build, refactor, or debug TypeScript dependency graphs using the cyrenejs package (Cyrene). Use when working with Ripple definitions, Token bindings, runtime startup, lazy resolution, or resource disposal in Cyrene applications.
+description: Build TypeScript service graphs with singleton and transient lifetimes, explicit registration, pre-resolution overrides, lazy resolution, and Symbol resource disposal.
 ---
 
 # Cyrene
 
-Use Cyrene as a declarative dependency graph runtime. Keep construction in `ripple()` definitions and let each `Cyrene` instance own resolution, caching, and disposal.
+Use ripple(factory, options?) or ripple(deps, factory, options?). Ripple declarations have no IDs.
+Dependencies reference Ripple objects; ordinary inputs retain their values and types.
 
-Import public APIs from `cyrenejs`. When adapting existing code, check the installed package's types and README for version-specific behavior; do not invent container APIs, decorators, or registration methods.
+Create new Cyrene() with no options. There is no start/init or startupFailure.
+Register every dependency with app.add({ key: Declaration }) or app.add('key', Declaration).
+Each add validates the whole graph before publishing; register prerequisites first or use one batch.
+Duplicate keys, duplicate declarations under different keys, and missing dependencies are rejected.
 
-## Model the graph
+add mutates and returns the same container. Chain calls or capture the returned container to accumulate
+key types and app.ripples.key completion. Standalone add calls cannot change the original variable's generic type; uncaptured keys
+have no ripples property completion; resolve(key) returns unknown. Compose registration entries with ordinary objects and object spreads.
+resolve(Ripple) infers the result directly from the declaration, even after standalone add calls.
+Original declarations and current replacements locate the same registration and use its current lifetime.
 
-- Define external capabilities with `token<T>(name)`.
-- Define construction with `ripple(inputs, factory, options?)`. Pass `{}` when there are no inputs.
-- The factory receives resolved inputs first; later parameters belong to the caller.
-- Calling a Ripple records parameters in a Ref; it does not run the factory. Call a parameterized Ripple to create a Ref before using it as an input, entry, binding target, or `resolve()` target. Default, optional, and rest parameters still require a Ref.
-- Reuse the same Ref when consumers must share its identity. Calling the Ripple again creates another identity.
-- Only top-level branded inputs are resolved. Nested objects, ordinary functions, classes, Promises, and other values pass through unchanged.
+override(key, replacement) is synchronous and only allowed before the first ripples.key access or resolve.
+The original declaration still locates the registration after replacement. New dependencies must be
+registered and replacement results must match the original type and sync/async contract when key types are known.
+Configuration locks immediately on activation, even if initialization fails.
+Ripple types retain dependency inputs. add/override reject statically identifiable strong cycles;
+lazy edges remain allowed. Capture or chain override results to preserve the updated graph type.
+Structurally identical declarations, dynamic keys, erased input types, and uncaptured mutations
+may evade static checks; runtime validation remains authoritative.
 
-## Compose and start
+app.ripples.key, resolve(key), and resolve(Ripple) initialize on demand. Synchronous factories with
+synchronous strong dependencies return real instances directly; an async factory or strong dependency
+makes the result a Promise. Async singletons keep returning the same Promise after completion.
+The ripples accessor is read-only; instances are not proxied. Singleton requests share initialization; failures remain cached.
+There is no runtime replacement, remove, reactive proxy, or scope API.
+Lifetime is 'singleton' (default) or 'transient'. Transient executes the factory on every resolution,
+including each property read, each strong dependency input, and each lazy.resolve call. Async attempts
+have independent Promises; failed attempts do not prevent a fresh explicit resolution.
+A singleton keeps its initially injected transient; method calls do not recreate that dependency.
+Transient can share singleton dependencies. Factories returning the same object do not get cloned.
+Recursive creation of a declaration along a still-initializing creation chain is rejected;
+a ready instance can use lazy to create another instance of the same transient declaration.
 
-Use `ripples` for named startup entries and `bindings` for Token implementations. This example shares one logger Ref between two consumers:
+Use lazy(() => Declaration) for deferred resolution and forward declaration references.
+The factory receives a handle with resolve(). Actual async waiting cycles are rejected.
+Lazy targets stay uninitialized until resolved. Lazy async targets do not make consumers async;
+only the handle resolve() returns a Promise. Plain Promise inputs are passed through unchanged.
+Factories must express dependencies through deps/lazy rather than awaiting container operations.
+During initialization, async lazy handles reuse a wrapper per handle and target instance. Starting resolution
+alone adds no wait edge; awaiting, returning it from an async factory, or consuming it through
+then/catch/finally does. Callback chains count even when used only for observation. Once the owner
+is ready, the handle returns the resolution result directly (cached for singleton, fresh for transient).
 
-```ts
-import { Cyrene, ripple, token } from 'cyrenejs';
+Owned singleton and transient resources are retained until container disposal and released in reverse first-completion order.
+Transient has no per-call disposal or request scope; bound its usage in long-lived containers.
+Prefer Symbol.asyncDispose, otherwise Symbol.dispose. Ordinary dispose methods and option disposers
+are not supported. Borrowed resources and plain inputs remain application-owned.
+Shared object identities are disposed once; conflicting owned/borrowed declarations are rejected.
+Late lazy dependencies and aliases do not receive additional topology-based disposal ordering.
 
-const Config = token<{ prefix: string }>('Config');
-const logger = ripple({ config: Config }, ({ config }, scope: string) => ({
-  label: `${config.prefix}:${scope}`,
-}));
-const sharedLogger = logger('users');
+dispose closes new resolution, waits for accepted initialization, then cleans resources.
+Business calls are not tracked: stop and drain work before disposing the container.
+Factories clean resources allocated before they throw; the container only owns returned instances.
+Use await using or try/finally with await app.dispose(). No automatic failure disposal.
+Synchronous creation failures and entry errors throw; asynchronous creation failures reject.
 
-const users = ripple({ logger: sharedLogger }, ({ logger }) => ({
-  describe: () => logger.label,
-}));
-const audit = ripple({ logger: sharedLogger }, ({ logger }) => ({ logger }));
-
-await using app = new Cyrene({
-  ripples: { users, audit },
-  bindings: [{ token: Config, value: { prefix: 'app' } }],
-});
-
-const services = await app.start();
-services.users.describe(); // 'app:users'
-await app.resolve(sharedLogger); // Same instance as services.audit.logger
-```
-
-- A binding supports exactly one of `value` or `dependency`. Tokens match by identity, not name; reuse the exported Token rather than recreating one with the same name.
-- `value` is borrowed external state. Cyrene never disposes it, even when a factory returns the same top-level object or function. Attaching an explicit disposer to that borrowed result makes resolution fail.
-- A function supplied through `value` remains a function value and is never called automatically.
-- `dependency` points to a Ripple, Ref, or Token and initializes only when reachable or explicitly resolved.
-- Do not add a direct factory form to bindings; wrap construction in `ripple()` so dependency and lifecycle semantics stay unified.
-- `ripples` contains enumerable string keys mapped to zero-parameter Ripples, Refs, or Tokens. `start()` validates the full reachable graph before running factories and returns the same named shape.
-- `defineRipples()` is an optional typed, branded collection helper. It is not a module or registration system.
-- Use another `Cyrene` when an independent lifetime is required. Share externally owned instances through Token value bindings.
-
-## Defer resolution
-
-Use `lazy(() => target)` as a Ripple input to receive a `Lazy<T>` handle. Call and await its `resolve()` method when the instance is needed; the injected value is not the instance or a callable getter.
-
-```ts
-import { lazy, ripple } from 'cyrenejs';
-
-const report = ripple({}, () => ({ text: 'Report ready' }));
-const dashboard = ripple({ report: lazy(() => report) }, ({ report }) => ({
-  render: async () => (await report.resolve()).text,
-}));
-```
-
-Lazy targets still participate in graph validation, so their Token bindings must exist before startup. The target callback can run during inspection; keep it free of construction side effects. A lazy edge can break a strong dependency cycle, but awaiting a cycle of lazy handles during initialization still fails. For cyclic TypeScript inference, annotate the relevant definition with `Dependency<T>` and its result with `T`.
-
-## Respect lifecycle semantics
-
-- The default lifetime is `singleton` per Cyrene and per definition or Ref identity; concurrent resolutions share initialization. Set `{ lifetime: 'transient' }` in Ripple options for a new instance on each resolution. A singleton consumer still retains the transient input it received at construction.
-- `start()` is memoized, including failures. A failed singleton can be retried through `resolve()`, but the original `start()` result remains failed.
-- Dispose the runtime with `await using` in a supporting TypeScript toolchain, or `try/finally` and `await app.dispose()`, including after startup failure. Disposal waits for in-flight initialization; new resolutions are rejected once disposal begins.
-- Disposal runs consumers before dependencies. Cleanup priority is explicit `options.dispose`, then `Symbol.asyncDispose`, then `Symbol.dispose`.
-- Shared result objects are disposed once. Do not give different explicit disposer function references to definitions that may return the same object.
-
-## Inspect before execution
-
-`inspect(target?)` and `validate(target?)` walk either the named entries or a supplied target without invoking factories. They throw for missing bindings or strong dependency cycles. `formatGraph()` renders an inspected graph without exposing Ref parameter values; the raw graph can contain those values.
-
-```ts
-import { formatGraph } from 'cyrenejs';
-
-const graph = app.inspect();
-console.log(formatGraph(graph));
-```
-
-Use `debugName` on important definitions so paths and rendered graphs remain understandable. A successful `isRipple()` or `isRipples()` check recognizes the public brand only; resolution still requires objects created by the same Cyrene runtime module copy.
+Use inspect and formatGraph for diagnostics; nodes contain only key and state.
+State is the latest initialization state transition for that key, not an aggregate of concurrent transient instances.
+Graph validation runs automatically on add and override. Validate with vp check, vp test run, vp pack,
+and an independent consumer declaration emit when public types change.

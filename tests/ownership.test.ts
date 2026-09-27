@@ -1,205 +1,143 @@
-import { describe, expect, it, vi } from 'vite-plus/test';
+import { expect, it, vi } from 'vite-plus/test';
 
-import { Cyrene, InvalidDependencyError, lazy, ripple, token } from '../src/index.ts';
-import { deferred } from './helpers.ts';
+import { Cyrene, ripple } from '../src/index.ts';
 
-describe('资源归属与别名', () => {
-  it('释放等待在途别名完成, 合并后激活的 lazy 依赖', async () => {
-    const gate = deferred<void>();
-    const entered = deferred<void>();
-    const order: string[] = [];
+it('逆创建顺序清理，消费者 disposer 仍可调用真实依赖', async () => {
+  const events: string[] = [];
 
-    const value = {
-      [Symbol.dispose]: () => {
-        order.push('shared');
-      },
-    };
+  const database = ripple(() => ({
+    flush() {
+      events.push('flush');
+    },
+    [Symbol.dispose]() {
+      events.push('database');
+    },
+  }));
 
-    const shared = ripple({}, () => value);
+  const worker = ripple({ database }, ({ database }) => ({
+    async [Symbol.asyncDispose]() {
+      await Promise.resolve();
+      database.flush();
+      events.push('worker');
+    },
+  }));
 
-    const consumer = ripple({ later: lazy(() => shared) }, ({ later }) => ({ later }), {
-      dispose: () => {
-        order.push('consumer');
-      },
-    });
+  const app = new Cyrene().add({ worker, database });
+  app.resolve('worker');
+  await app.dispose();
+  expect(events).toEqual(['flush', 'worker', 'database']);
+});
 
-    const alias = ripple({}, async () => {
-      entered.resolve();
-      await gate.promise;
-      return value;
-    });
+it('按实际完成顺序清理独立资源，async 协议优先且忽略普通 dispose', async () => {
+  const events: string[] = [];
+  const sync = vi.fn();
+  const ordinary = vi.fn();
 
-    const app = new Cyrene();
-    const result = await app.resolve(consumer);
-    await result.later.resolve();
-    const pending = app.resolve(alias);
-    await entered.promise;
-    const disposal = app.dispose();
-    expect(order).toEqual([]);
-    gate.resolve();
-    await pending;
-    await disposal;
-    expect(order).toEqual(['consumer', 'shared']);
+  const first = ripple(() => ({
+    [Symbol.asyncDispose]: async () => {
+      events.push('first');
+    },
+    [Symbol.dispose]: sync,
+    dispose: ordinary,
+  }));
+
+  const second = ripple(() => ({
+    [Symbol.dispose]: () => {
+      events.push('second');
+    },
+  }));
+
+  const app = new Cyrene().add({ first, second, plain: ripple(() => ({ dispose: ordinary })) });
+  app.resolve('first');
+  app.resolve('second');
+  app.resolve('plain');
+  await app.dispose();
+  expect(events).toEqual(['second', 'first']);
+  expect(sync).not.toHaveBeenCalled();
+  expect(ordinary).not.toHaveBeenCalled();
+});
+
+it('借用资源不清理，同一 owned 对象只清理一次', async () => {
+  const borrowedCleanup = vi.fn();
+  const ownedCleanup = vi.fn();
+  const borrowed = ripple(() => ({ [Symbol.dispose]: borrowedCleanup }), { ownership: 'borrowed' });
+  const owned = ripple(() => ({ [Symbol.dispose]: ownedCleanup }));
+  const alias = ripple({ owned }, ({ owned }) => owned);
+  const app = new Cyrene().add({ borrowed, owned, alias });
+  app.resolve('borrowed');
+  app.resolve('alias');
+  await app.dispose();
+  expect(ownedCleanup).toHaveBeenCalledOnce();
+  expect(borrowedCleanup).not.toHaveBeenCalled();
+});
+
+it('同一实例所有权冲突明确报错，保留原清理责任', async () => {
+  const cleanup = vi.fn();
+  const shared = { [Symbol.dispose]: cleanup };
+
+  const app = new Cyrene().add({
+    owned: ripple(() => shared),
+    borrowed: ripple(() => shared, { ownership: 'borrowed' }),
   });
 
-  it('对象别名合并造成资源环时仍各清理一次, 清理失败继续释放', async () => {
-    const cleanup = vi.fn();
-    const failure = new Error('cleanup failed');
+  app.resolve('owned');
+  expect(() => app.resolve('borrowed')).toThrow();
+  await app.dispose();
+  expect(cleanup).toHaveBeenCalledOnce();
+});
 
-    const shared = {
-      [Symbol.dispose]: () => {
+it('清理失败聚合并继续，重复 dispose 不会再次调用资源', async () => {
+  const cleanup = vi.fn();
+  const failure = new Error('cleanup');
+
+  const app = new Cyrene().add({
+    first: ripple(() => ({ [Symbol.dispose]: cleanup })),
+    second: ripple(() => ({
+      [Symbol.dispose]() {
         throw failure;
       },
-    };
-
-    const leaf = ripple({}, () => shared);
-    const middle = ripple({ leaf }, () => ({}), { dispose: cleanup });
-    const root = ripple({ middle }, () => shared);
-    const app = new Cyrene({ ripples: { root } });
-    await app.start();
-    const disposal = app.dispose();
-    await expect(disposal).rejects.toMatchObject({ errors: [failure] });
-    expect(cleanup).toHaveBeenCalledOnce();
-    expect(app.dispose()).toBe(disposal);
+    })),
   });
 
-  it.each([false, true])('合并别名的消费者和依赖, 入口反转=%s', async reverse => {
-    const order: string[] = [];
-    const shared = { [Symbol.dispose]: () => order.push('shared') };
+  app.resolve('first');
+  app.resolve('second');
+  const disposal = app.dispose();
+  await expect(disposal).rejects.toMatchObject({ errors: [failure] });
+  expect(app.dispose()).toBe(disposal);
+  expect(cleanup).toHaveBeenCalledOnce();
+});
 
-    const left = ripple({}, () => ({}), {
-      dispose: () => {
-        order.push('left');
-      },
-    });
+it('await using 自动等待容器的异步清理', async () => {
+  const cleanup = vi.fn(async () => {});
 
-    const right = ripple({}, () => ({}), {
-      dispose: () => {
-        order.push('right');
-      },
-    });
+  {
+    await using app = new Cyrene().add(
+      'resource',
+      ripple(() => ({ [Symbol.asyncDispose]: cleanup })),
+    );
+    app.resolve('resource');
+    expect(cleanup).not.toHaveBeenCalled();
+  }
 
-    const a = ripple({ left }, () => shared);
-    const b = ripple({ right }, () => shared);
+  expect(cleanup).toHaveBeenCalledOnce();
+});
 
-    const consumer = ripple({ a }, ({ a }) => ({ a }), {
-      dispose: () => {
-        order.push('consumer');
-      },
-    });
+it('disposer 同步重入 dispose 得到同一 Promise，不重复执行清理', async () => {
+  let nested: Promise<void> | undefined;
+  const original = new Cyrene();
 
-    const app = new Cyrene({ ripples: reverse ? { b, consumer } : { consumer, b } });
-    await app.start();
-    await app.dispose();
-    expect(order.filter(name => name === 'shared')).toHaveLength(1);
-    expect(order.indexOf('consumer')).toBeLessThan(order.indexOf('shared'));
-    expect(order.indexOf('shared')).toBeLessThan(order.indexOf('left'));
-    expect(order.indexOf('shared')).toBeLessThan(order.indexOf('right'));
+  const cleanup = vi.fn(() => {
+    nested = original.dispose();
   });
 
-  it.each([false, true])('显式清理覆盖别名的自动清理, 显式定义先解析=%s', async explicitFirst => {
-    const automatic = vi.fn();
-    const explicit = vi.fn();
-    const value = { [Symbol.dispose]: automatic };
-    const a = ripple({}, () => value);
-    const b = ripple({}, () => value, { dispose: explicit });
-    const c = ripple({}, () => value, { dispose: explicit });
-    const app = new Cyrene();
+  const app = original.add(
+    'resource',
+    ripple(() => ({ [Symbol.dispose]: cleanup })),
+  );
 
-    for (const target of explicitFirst ? [b, a, c] : [a, b, c]) {
-      await app.resolve(target);
-    }
-
-    await app.dispose();
-    expect(explicit).toHaveBeenCalledExactlyOnceWith(value);
-    expect(automatic).not.toHaveBeenCalled();
-  });
-
-  it('清理冲突使解析失败, 保留原清理方法及失败别名的依赖边', async () => {
-    const order: string[] = [];
-    const value = {};
-
-    const cleanup = () => {
-      order.push('shared');
-    };
-
-    const conflicting = vi.fn();
-
-    const dependency = ripple({}, () => ({}), {
-      dispose: () => {
-        order.push('dependency');
-      },
-    });
-
-    const first = ripple({}, () => value, { dispose: cleanup });
-    const second = ripple({ dependency }, () => value, { dispose: conflicting });
-    const app = new Cyrene();
-    await app.resolve(first);
-    await expect(app.resolve(second)).rejects.toMatchObject({
-      name: 'ResolutionError',
-      cause: expect.any(InvalidDependencyError),
-    });
-    await app.dispose();
-    expect(order).toEqual(['shared', 'dependency']);
-    expect(conflicting).not.toHaveBeenCalled();
-  });
-
-  it('借用对象及函数经别名转发后仍不自动释放, 未使用绑定也保留归属', async () => {
-    const dispose = vi.fn();
-    const object = { [Symbol.dispose]: dispose };
-    const fn = Object.assign(() => {}, { [Symbol.dispose]: dispose });
-    const External = token<typeof object>('External');
-    const Unused = token<typeof fn>('Unused');
-    const forwarded = ripple({ external: External }, ({ external }) => external);
-    const alias = ripple({ forwarded }, ({ forwarded }) => forwarded);
-
-    const app = new Cyrene({
-      ripples: { alias, fn: ripple({}, () => fn) },
-      bindings: [
-        { token: External, value: object },
-        { token: Unused, value: fn },
-      ],
-    });
-
-    const result = await app.start();
-    expect(result.alias).toBe(object);
-    expect(result.fn).toBe(fn);
-    await app.dispose();
-    expect(dispose).not.toHaveBeenCalled();
-  });
-
-  it('拒绝显式接管借用资源, 仍释放已创建的其他依赖', async () => {
-    const automatic = vi.fn();
-    const explicit = vi.fn();
-    const cleanup = vi.fn();
-    const value = { [Symbol.dispose]: automatic };
-    const External = token<typeof value>('External');
-    const other = ripple({}, () => ({}), { dispose: cleanup });
-
-    const service = ripple({ external: External, other }, ({ external }) => external, {
-      dispose: explicit,
-    });
-
-    const app = new Cyrene({ ripples: { service }, bindings: [{ token: External, value }] });
-    await expect(app.start()).rejects.toMatchObject({ cause: expect.any(InvalidDependencyError) });
-    await app.dispose();
-    expect(automatic).not.toHaveBeenCalled();
-    expect(explicit).not.toHaveBeenCalled();
-    expect(cleanup).toHaveBeenCalledOnce();
-  });
-
-  it('原始值不按相等值合并资源, 外部原始值不影响工厂清理', async () => {
-    const dispose = vi.fn();
-    const External = token<number>('External');
-    const service = ripple({}, () => 1, { lifetime: 'transient', dispose });
-
-    const app = new Cyrene({
-      ripples: { a: service, b: service },
-      bindings: [{ token: External, value: 1 }],
-    });
-
-    await app.start();
-    await app.dispose();
-    expect(dispose).toHaveBeenCalledTimes(2);
-  });
+  app.resolve('resource');
+  const closing = app.dispose();
+  await closing;
+  expect(nested).toBe(closing);
+  expect(cleanup).toHaveBeenCalledOnce();
 });

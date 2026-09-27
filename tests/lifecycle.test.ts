@@ -1,276 +1,157 @@
-import { describe, expect, it, vi } from 'vite-plus/test';
+import { expect, it, vi } from 'vite-plus/test';
 
-import {
-  CircularDependencyError,
-  Cyrene,
-  DisposedError,
-  MissingBindingError,
-  ResolutionError,
-  lazy,
-  ripple,
-  token,
-} from '../src/index.ts';
+import { CircularDependencyError, Cyrene, DisposedError, lazy, ripple } from '../src/index.ts';
 import type { Dependency, Lazy } from '../src/index.ts';
 import { deferred } from './helpers.ts';
 
-describe('延迟解析与资源释放', () => {
-  it('支持合法的延迟依赖环, 释放后拒绝解析', async () => {
-    interface A {
-      b: Lazy<B>;
-    }
-    interface B {
-      a: A;
-    }
-    const disposeA = vi.fn();
-    const disposeB = vi.fn();
-    const factory = vi.fn(({ a }: { a: A }): B => ({ a }));
+it('初始化期间仅启动 lazy 不建立等待边，目标可以等待启动方', async () => {
+  const gate = deferred<void>();
+  let pending: unknown;
 
-    const a: Dependency<A> = ripple({ b: lazy(() => b) }, ({ b }): A => ({ b }), {
-      dispose: disposeA,
-    });
+  const a: Dependency<string, unknown, true> = ripple({ b: lazy(() => b) }, async ({ b }) => {
+    pending = b.resolve();
+    expect(b.resolve()).toBe(pending);
+    await gate.promise;
 
-    const b: Dependency<B> = ripple({ a }, factory, { dispose: disposeB });
-    const app = new Cyrene({ ripples: { a } });
-    const result = await app.start();
-    expect(factory).not.toHaveBeenCalled();
-    const instanceB = await result.a.b.resolve();
-    expect(instanceB.a).toBe(result.a);
-    expect(await result.a.b.resolve()).toBe(instanceB);
-    await app.dispose();
-    await app.dispose();
-    expect(disposeA).toHaveBeenCalledExactlyOnceWith(result.a);
-    expect(disposeB).toHaveBeenCalledExactlyOnceWith(instanceB);
-    await expect(result.a.b.resolve()).rejects.toBeInstanceOf(DisposedError);
+    return 'a';
   });
 
-  it('检测并发启动入口之间的延迟等待环', async () => {
-    const a: Dependency<number> = ripple({ b: lazy(() => b) }, async ({ b }): Promise<number> =>
-      b.resolve(),
-    );
-
-    const b: Dependency<number> = ripple({ a: lazy(() => a) }, async ({ a }): Promise<number> =>
-      a.resolve(),
-    );
-
-    const app = new Cyrene({ ripples: { a, b } });
-    await expect(app.start()).rejects.toBeInstanceOf(AggregateError);
-    await app.dispose();
-  });
-
-  it('拒绝 transient 延迟等待环, 避免无限递归', async () => {
-    const a: Dependency<number> = ripple(
-      { b: lazy(() => b) },
-      async ({ b }): Promise<number> => b.resolve(),
-      {
-        lifetime: 'transient',
-      },
-    );
-
-    const b: Dependency<number> = ripple({ a }, ({ a }): number => a, {
-      lifetime: 'transient',
-    });
-
-    const app = new Cyrene({ ripples: { a } });
-    await expect(app.start()).rejects.toBeInstanceOf(CircularDependencyError);
-    await app.dispose();
-  });
-
-  it('校验延迟依赖目标, 不提前初始化', async () => {
-    const missing = token<number>('Missing');
-    const factory = vi.fn(() => 1);
-    const root = ripple({ later: lazy(() => missing) }, factory);
-    const app = new Cyrene({ ripples: { root } });
-    await expect(app.start()).rejects.toBeInstanceOf(MissingBindingError);
-    expect(factory).not.toHaveBeenCalled();
-    await app.dispose();
-  });
-
-  it('保留依赖路径与工厂原始错误', async () => {
-    const cause = new Error('offline');
-
-    const database = ripple(
-      {},
-      () => {
-        throw cause;
-      },
-      { debugName: 'Database' },
-    );
-
-    const service = ripple({ database }, () => 1, { debugName: 'Users' });
-    const app = new Cyrene();
-    await expect(app.resolve(service)).rejects.toMatchObject({
-      path: ['Users', 'Database'],
-      cause,
-    });
-    await app.dispose();
-  });
-
-  it('保留普通 Promise 输入, 不自动等待', async () => {
-    const pending = deferred<number>();
-    const service = ripple({ pending: pending.promise }, ({ pending }) => ({ pending }));
-    const app = new Cyrene();
-    const result = await app.resolve(service);
-    expect(result.pending).toBe(pending.promise);
-    pending.resolve(1);
-    await app.dispose();
-  });
-
-  it('支持异步资源管理, 释放每个 transient 实例', async () => {
-    const dispose = vi.fn();
-    const service = ripple({}, () => ({}), { lifetime: 'transient', dispose });
-
-    {
-      await using app = new Cyrene({ ripples: { service } });
-      await app.start();
-      await app.resolve(service);
-    }
-
-    expect(dispose).toHaveBeenCalledTimes(2);
-  });
-
-  it('拒绝运行时延迟等待环, 避免死锁', async () => {
-    const a: Dependency<number> = ripple({ b: lazy(() => b) }, async ({ b }): Promise<number> =>
-      b.resolve(),
-    );
-
-    const b: Dependency<number> = ripple({ a }, ({ a }): number => a);
-    const app = new Cyrene({ ripples: { a } });
-    await expect(app.start()).rejects.toBeInstanceOf(CircularDependencyError);
-    await app.dispose();
-  });
-
-  it('等待初始化后先释放消费者, 释放期间拒绝新解析', async () => {
-    const gate = deferred<object>();
-    const entered = deferred<void>();
-    const order: string[] = [];
-
-    const database = ripple(
-      {},
-      () => {
-        entered.resolve();
-        return gate.promise;
-      },
-      {
-        dispose: () => {
-          order.push('database');
-        },
-      },
-    );
-
-    const service = ripple({ database }, ({ database }) => ({ database }), {
-      dispose: () => {
-        order.push('service');
-      },
-    });
-
-    const app = new Cyrene({ ripples: { service } });
-    const startup = app.start();
-    await entered.promise;
-    const disposal = app.dispose();
-    expect(app.dispose()).toBe(disposal);
-    await expect(app.resolve(database)).rejects.toBeInstanceOf(DisposedError);
-    await expect(app.start()).rejects.toBeInstanceOf(DisposedError);
-    expect(order).toEqual([]);
-    gate.resolve({});
-    await startup;
-    await disposal;
-    expect(app.dispose()).toBe(disposal);
-    await app.dispose();
-    expect(order).toEqual(['service', 'database']);
-  });
-
-  it('记录后续激活的延迟依赖边, 保证释放顺序', async () => {
-    const order: string[] = [];
-
-    const database = ripple({}, () => ({}), {
-      dispose: () => {
-        order.push('database');
-      },
-    });
-
-    const service = ripple({ database: lazy(() => database) }, ({ database }) => database, {
-      dispose: () => {
-        order.push('service');
-      },
-    });
-
-    const app = new Cyrene();
-    const handle = await app.resolve(service);
-    await handle.resolve();
-    await app.dispose();
-    expect(order).toEqual(['service', 'database']);
-  });
-
-  it('清理失败后继续释放, 遵守外部资源归属与清理优先级', async () => {
-    const externalDispose = vi.fn();
-    const External = token<object>('External');
-    const order: string[] = [];
-    const syncDispose = vi.fn();
-    const asyncDispose = vi.fn(async () => {});
-
-    const resource = ripple({}, () => ({
-      [Symbol.dispose]: syncDispose,
-      [Symbol.asyncDispose]: asyncDispose,
-    }));
-
-    const broken = ripple({ resource, external: External }, () => ({}), {
-      dispose: () => {
-        order.push('broken');
-        throw new Error('cleanup');
-      },
-    });
-
-    const app = new Cyrene({
-      ripples: { broken },
-      bindings: [{ token: External, value: { [Symbol.dispose]: externalDispose } }],
-    });
-
-    await app.start();
-    const disposal = app.dispose();
-    await expect(disposal).rejects.toBeInstanceOf(AggregateError);
-    expect(app.dispose()).toBe(disposal);
-    await expect(app.dispose()).rejects.toBeInstanceOf(AggregateError);
-    expect(order).toEqual(['broken']);
-    expect(asyncDispose).toHaveBeenCalledOnce();
-    expect(syncDispose).not.toHaveBeenCalled();
-    expect(externalDispose).not.toHaveBeenCalled();
-  });
-
-  it('启动失败后等待其他分支结束, 保留成功实例供清理', async () => {
-    const gate = deferred<object>();
-    const cleanup = vi.fn();
-    const good = ripple({}, () => gate.promise, { dispose: cleanup });
-
-    const bad = ripple({}, () => {
-      throw new Error('failed');
-    });
-
-    const app = new Cyrene({ ripples: { good, bad } });
-    let settled = false;
-    const startup = app.start();
-
-    const observed = startup.catch(error => {
-      settled = true;
-      return error;
-    });
-
+  const b = ripple({ a: lazy(() => a) }, async ({ a }) => {
     await Promise.resolve();
-    expect(settled).toBe(false);
-    gate.resolve({});
-    expect(await observed).toBeInstanceOf(ResolutionError);
-    await app.dispose();
-    expect(cleanup).toHaveBeenCalledOnce();
+
+    return `${await a.resolve()}b`;
   });
 
-  it('共享对象只释放一次, 优先使用显式清理方法', async () => {
-    const automatic = vi.fn();
-    const explicit = vi.fn();
-    const value = { [Symbol.dispose]: automatic };
-    const service = ripple({}, () => value, { lifetime: 'transient', dispose: explicit });
-    const app = new Cyrene({ ripples: { a: service, b: service } });
-    await app.start();
-    await app.dispose();
-    expect(explicit).toHaveBeenCalledOnce();
-    expect(automatic).not.toHaveBeenCalled();
+  const app = new Cyrene().add({ a, b });
+  const first = app.resolve(a);
+  const second = app.resolve(b);
+  expect(pending).toBeInstanceOf(Promise);
+  gate.resolve();
+  expect(await first).toBe('a');
+  expect(await second).toBe('ab');
+  expect(await pending).toBe('ab');
+  await app.dispose();
+});
+
+it('两个工厂在 await 后通过 lazy 互相等待仍拒绝并允许关闭', async () => {
+  const a: Dependency<unknown> = ripple({ b: lazy(() => b) }, async ({ b }) => {
+    await Promise.resolve();
+
+    return b.resolve();
   });
+
+  const b: Dependency<unknown> = ripple({ a: lazy(() => a) }, async ({ a }) => {
+    await Promise.resolve();
+
+    return a.resolve();
+  });
+
+  const app = new Cyrene().add({ a, b });
+  await expect(app.resolve(a)).rejects.toBeInstanceOf(CircularDependencyError);
+  await app.dispose();
+});
+
+it('lazy Promise 支持 then、catch 和 finally，并保留原始拒绝', async () => {
+  const failure = new Error('unavailable');
+  const finalized = vi.fn();
+
+  const child = ripple(async () => {
+    throw failure;
+  });
+
+  const parent = ripple({ child: lazy(() => child) }, ({ child }) =>
+    child
+      .resolve()
+      .then(() => 'unexpected')
+      .catch(error => {
+        expect(error.cause).toBe(failure);
+
+        return 'recovered';
+      })
+      .finally(finalized),
+  );
+
+  const app = new Cyrene().add({ child, parent });
+  expect(await app.resolve(parent)).toBe('recovered');
+  expect(finalized).toHaveBeenCalledOnce();
+  await app.dispose();
+});
+
+it('初始化完成后的 lazy 句柄继续返回公共入口的缓存 Promise', async () => {
+  const child = ripple(async () => 'child');
+  let started: Promise<string> | undefined;
+
+  const parent = ripple({ child: lazy(() => child) }, ({ child }) => {
+    started = child.resolve();
+
+    return child;
+  });
+
+  const app = new Cyrene().add({ child, parent });
+  const handle = app.resolve(parent);
+  const pending = app.resolve(child);
+  expect(handle.resolve()).toBe(pending);
+  expect(await started).toBe('child');
+  expect(await pending).toBe('child');
+  expect(handle.resolve()).toBe(pending);
+  await app.dispose();
+});
+
+it('按需解析时 lazy 不激活依赖，句柄返回真实单例', async () => {
+  const factory = vi.fn(() => ({}));
+  const later = ripple(factory);
+  const root = ripple({ later: lazy(() => later) }, deps => deps);
+  const app = new Cyrene().add({ root, later });
+  const value = app.resolve('root');
+  expect(factory).not.toHaveBeenCalled();
+  expect(value.later.resolve()).toBe(app.resolve('later'));
+  await app.dispose();
+  expect(() => value.later.resolve()).toThrow(DisposedError);
+});
+
+it('lazy 注册回调只在构图时求值，解析和诊断不重新求值', async () => {
+  const later = ripple(() => ({}));
+  const target = vi.fn(() => later);
+  const root = ripple({ later: lazy(target) }, deps => deps);
+  const app = new Cyrene().add({ root, later });
+  expect(target).toHaveBeenCalledOnce();
+  app.inspect();
+  const value = app.resolve('root');
+  value.later.resolve();
+  expect(target).toHaveBeenCalledOnce();
+  await app.dispose();
+});
+
+it('未激活的 lazy 环合法，真实异步等待环被拒绝', async () => {
+  const a: Dependency<unknown> = ripple({ b: lazy(() => b) }, async ({ b }) => b.resolve());
+  const b: Dependency<unknown> = ripple({ a: lazy(() => a) }, async ({ a }) => a.resolve());
+  const app = new Cyrene().add({ a, b });
+  await expect(app.resolve('a')).rejects.toThrow();
+  await app.dispose();
+});
+
+it('单节点 lazy 自等待被拒绝，失败句柄不能继续解析', async () => {
+  let saved: Lazy<unknown> | undefined;
+
+  const self: Dependency<unknown> = ripple({ self: lazy(() => self) }, async deps => {
+    saved = deps.self;
+
+    return deps.self.resolve();
+  });
+
+  const app = new Cyrene().add('self', self);
+  await expect(app.resolve('self')).rejects.toBeInstanceOf(CircularDependencyError);
+  expect(() => saved!.resolve()).toThrow(DisposedError);
+  await app.dispose();
+});
+
+it('读取 ripples 只初始化目标，lazy 目标保持未创建', async () => {
+  const factory = vi.fn(() => ({}));
+  const later = ripple(factory);
+  const root = ripple({ later: lazy(() => later) }, deps => deps);
+  const app = new Cyrene().add({ root, later });
+  const value = app.ripples.root;
+  expect(value).toHaveProperty('later');
+  expect(factory).not.toHaveBeenCalled();
+  await app.dispose();
 });

@@ -25,7 +25,7 @@
 
 **Cyrene 把这些关系写成一张显式的依赖图**, 由 TypeScript 推导输入与实例类型, 由运行时负责解析, 缓存和清理
 
-一个 `Cyrene` 就是一个独立运行作用域, 构造时声明入口和外部能力, 然后启动它
+一个 `Cyrene` 就是一个独立运行作用域, 首次解析前注册服务和替换实现, 按需创建真实实例
 
 <a id="quick-start"></a>
 
@@ -40,137 +40,289 @@ npm install cyrenejs
 也可以使用 `pnpm add cyrenejs` 或 `vp add cyrenejs`
 
 需要 Node.js 22.0.0 及以上, 包提供 ESM 入口和 TypeScript 类型声明
-下面的 TypeScript 示例使用 `await using`, 请通过支持该语法的 TypeScript 工具链编译运行; 也可以使用 `try/finally` 配合 `await app.dispose()` 显式释放资源
+下面的 TypeScript 示例使用 `await using`, 请通过支持该语法的运行时或 TypeScript 工具链运行; 也可以使用 `try/finally` 配合 `await app.dispose()` 显式释放资源
 
 ```ts
-import { Cyrene, ripple, token } from 'cyrenejs';
+import { Cyrene, ripple } from 'cyrenejs';
 
-// 外部配置由运行环境提供
-const Config = token<{ prefix: string }>('Config');
+const Config = ripple(() => ({ prefix: 'app' }));
 
-const logger = ripple({ config: Config }, ({ config }, scope: string) => ({
-  label: `${config.prefix}:${scope}`,
+const Logger = ripple({ config: Config }, ({ config }) => ({
+  format: (message: string) => `[${config.prefix}] ${message}`,
 }));
 
-// 调用 logger 只记录参数, 实例会在启动时创建
-const users = ripple({ logger: logger('users') }, ({ logger }) => ({
-  describe: () => logger.label,
+const Users = ripple({ logger: Logger }, ({ logger }) => ({
+  describe: () => logger.format('users'),
 }));
 
-await using app = new Cyrene({
-  ripples: { users },
-  bindings: [{ token: Config, value: { prefix: 'app' } }],
-});
+await using app = new Cyrene().add({ config: Config, logger: Logger }).add('users', Users);
 
-const services = await app.start();
-services.users.describe(); // 返回 app:users
+app.override(
+  'config',
+  ripple(() => ({ prefix: 'demo' })),
+);
+
+const users = app.ripples.users;
+users.describe(); // [demo] users
 ```
 
-`ripples` 声明需要启动的命名入口, `bindings` 提供 Token 的外部实现
-
-`start()` 会先校验全部入口的依赖图, 再按依赖关系初始化, 返回值保留入口名称和实例类型
+`add()` 只注册声明, 首次读取 `app.ripples.key` 时才创建目标及其强依赖
+同步服务直接返回实例, 异步服务返回 Promise; `resolve(key)` 和 `resolve(Ripple)` 遵循同样的规则
 
 <a id="features"></a>
 
 ## ✨ 能力一览
 
-- **依赖显式** - 使用 `ripple()` 组合依赖, 普通函数和对象仍然是普通值
-- **参数自然** - 直接调用依赖定义传入参数, 支持默认参数, 可选参数和 rest 参数
-- **异步初始化** - 独立分支并行执行, 同一 singleton 的并发解析共享初始化 Promise
-- **生命周期明确** - 默认每个 Cyrene 内 singleton, 也支持每次解析创建的 transient
-- **延迟解析** - `lazy()` 注入解析句柄, 在真正需要时初始化目标
-- **先校验后执行** - 初始化前检查缺失绑定与强依赖环, `inspect()` 可以查看依赖图
-- **统一清理** - 先释放消费者再释放依赖, 支持自定义清理方法和 `await using`
+- **依赖显式** - 用 `ripple()` 描述依赖和工厂, 普通输入值原样传递
+- **类型推导** - 工厂输入与实例类型自动推导, 链式 `add()` 累积注册 key 的类型
+- **异步初始化** - 独立分支并行执行, 并发解析共享同一次单例初始化
+- **首次解析前替换** - `override()` 更换尚未执行的配方, 注册变更时自动校验依赖图
+- **延迟解析** - `lazy()` 提供解析句柄, 按目标生命周期创建实例
+- **统一清理** - 按逆创建顺序释放资源, 支持 Symbol 清理协议和 `await using`
 
 ## 🫧 定义, 引用与实例
 
 ```text
-ripple(inputs, factory)  → 定义依赖
-依赖定义(...params)      → 创建带参数的 Ref
-cyrene.start()          → 初始化所有命名入口
-cyrene.resolve(target)  → 按需解析单个目标
-cyrene.dispose()        → 释放持有的资源
+ripple(factory)        → 声明无依赖服务
+ripple(deps, factory)  → 声明带依赖服务
+app.add(entries)      → 批量注册命名服务
+app.add(key, ripple)  → 注册单个服务
+app.ripples.key       → 按需获取真实实例
+app.resolve(key)      → 获取真实实例
+app.resolve(Ripple)   → 通过声明获取真实实例
+app.dispose()         → 释放容器持有的资源
 ```
 
-同一份定义或 Ref 在同一个 Cyrene 内按 lifetime 复用实例, 不同 Cyrene 的缓存彼此隔离
+Ripple 不携带 ID, 名称由 `app.add()` 决定; 使用无参数的 `new Cyrene()` 创建容器
+声明不可调用, 依赖通过 Ripple 对象表达; 普通输入和嵌套对象保持原样
+
+支持 `lifetime?: 'singleton' | 'transient'`, 默认即为 singleton
+singleton 在同一容器共享实例, transient 每次解析重新执行工厂; 两者都支持同步或异步工厂
+
+```ts
+const logger = (scope: string) => ripple(() => ({ scope }), { lifetime: 'singleton' });
+
+const app = new Cyrene()
+  .add('auditLogger', logger('audit'))
+  .add('requestLogger', logger('request'));
+```
+
+## 注册与组合
+
+两种 `add()` 都修改并返回同一个容器, 也可以分开调用:
+
+```ts
+const app = new Cyrene();
+app.add({ config: Config, logger: Logger });
+app.add('users', Users);
+const users = app.resolve(Users);
+```
 
 > [!TIP]
-> 每次调用依赖定义都会创建新的 Ref, 即使参数相同也不会自动合并
-> 需要共享实例时, 先保存 Ref, 再把它传给多个依赖
+> 链式调用或接住 `add()` 的返回值, 才能累积注册 key 的类型
+> 分开追加并丢弃返回值时, TypeScript 无法改变原变量的泛型, `app.ripples` 不会出现新增 key 的类型提示
+> 此时使用 `app.resolve(Users)` 可以从声明推导类型; `app.resolve('users')` 仍可解析, 但返回 `unknown`
+> 追加注册仅限首次解析前, 读取 `app.ripples.key` 后也会锁定注册表
 
 ```ts
-const usersLogger = logger('users');
+const app = new Cyrene().add({ config: Config, logger: Logger }).add('users', Users);
 
-const users = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
-const audit = ripple({ logger: usersLogger }, ({ logger }) => ({ logger }));
+app.ripples.users.describe(); // 链式注册保留 users 的类型提示
 ```
 
-## Ripple 集合与运行时识别
+所有 Ripple 依赖都必须显式注册, 同一容器中 key 不可重复, 一个 Ripple 只能占用一个 key
+分批注册时先注册依赖; 同批内顺序不限, 相互 lazy 引用需要放在同批中
 
-`defineRipples()` 在原对象上添加集合标识并返回它, 保留入口名称和实例类型推导。
-入口接受无参数依赖定义、Ref 或 Token; 参数化定义需要先创建 Ref。
-入口键必须是自身可枚举的字符串, Symbol 入口和不可枚举入口会报错。
+组合服务直接使用普通对象和对象展开:
 
 ```ts
-import { defineRipples, isRipple, isRipples, ripple } from 'cyrenejs';
-
-const logger = ripple({}, () => ({ name: 'logger' }));
-const ripples = defineRipples({ logger });
-
-isRipple(logger); // true
-isRipples(ripples); // true
-// 直接传给 new Cyrene({ ripples })
+const infrastructure = { config: Config, logger: Logger };
+const app = new Cyrene().add({ ...infrastructure, users: Users });
 ```
 
-`ripple()` 和 `defineRipples()` 的返回值分别带有内部 Symbol 标识,
-通过 `isRipple()` 和 `isRipples()` 判断, Symbol 不从包入口导出。
-标识不可枚举、不可修改、不可删除, 不会随对象展开复制或出现在解析结果中。
-`defineRipples()` 需要可添加属性的对象, 不冻结集合; 对同一集合可重复调用。
-判断方法检查自身标识严格等于 `true`, 不代表依赖已注册或可被当前运行时解析。
-v0 要求定义与 Cyrene 共享同一份运行时模块, 不支持跨包副本解析。
+`isRipple()` 用于识别由当前库创建的声明
+每次 `add()` 整体检查重复注册, 缺失依赖和强依赖环, 失败不会改变原图
 
 ## 查看依赖图
 
-`formatGraph()` 将 `inspect()` 的结果转换为终端文本, 由调用方决定打印或写入文件:
+`inspect()` 返回节点和边的快照, 不会执行工厂
+`formatGraph()` 将快照转换为终端文本, 由调用方决定打印或写入文件:
 
 ```ts
 import { formatGraph } from 'cyrenejs';
 
 console.log(formatGraph(app.inspect()));
-console.log(formatGraph(app.inspect(users)));
 ```
 
-```text
-Users #0
-├─ Database #1
-│  └─ Config #2 [token]
-└─ Logger(ref) #3 [ref]
-   └─ Logger #4 [definition]
+节点只包含注册 `key` 和初始化 `state`; 边标明消费者, 输入属性, 目标与初始化策略
+`↗` 表示已展开的共享节点, `↻` 表示当前路径中的循环引用
+空图输出 `(empty graph)`
+
+## 🔄 首次解析前替换
+
+`app.override(key, replacement)` 同步更换配方并返回容器, 立即校验新依赖和循环
+原声明与当前替身都定位这个 key, 新依赖必须已经注册
+在类型已累积的容器上, 替身结果必须兼容原服务类型, 并保持原声明的同步/异步契约
+这让已经声明的消费者和 lazy 句柄继续保有正确的返回类型
+通过原声明或当前替身调用 `resolve()`, 都会使用替换后的配方和 lifetime; 未注册的声明会报错
+
+第一次读取 `app.ripples.key` 或调用 `resolve()` 时立即锁定注册表, 即使初始化失败也不再允许配置变更
+需要另一套服务时创建新的容器; 已创建的消费者始终持有原来的真实依赖
+
+## 🔎 类型层面的循环检查
+
+Ripple 类型保留工厂的依赖声明, `add()` 和 `override()` 会检查可静态辨认的强依赖环:
+
+```ts
+const Database = ripple(() => ({ query: (): number => 1 }));
+const Users = ripple({ database: Database }, ({ database }) => ({
+  count: () => database.query(),
+}));
+
+const app = new Cyrene().add({ database: Database, users: Users });
+
+// 类型错误: database → users → database
+app.override(
+  'database',
+  ripple({ users: Users }, ({ users }) => ({
+    query: () => users.count(),
+  })),
+);
 ```
 
-节点名称来自 `debugName` 或 Token 名称。`#id` 区分同名节点,
-`↗` 表示已展开的共享节点, `↻` 表示当前路径中的循环引用。
-延迟边标记为 `[lazy]`, Ref 的定义关系标记为 `[definition]` 且不沿该边展开。
-空图输出 `(empty graph)`。格式化不会执行工厂, 也不会输出 Ref 参数值。
+lazy 边不参与静态循环检查, 仍由运行时检测真实初始化等待环
+链式调用或接住 `override()` 返回值, 才能让后续类型检查看到替换后的依赖图
+
+TypeScript 不能区分结构完全相同的声明对象; 同形声明, 动态 key, 显式 `Dependency<T>`
+标注擦除的依赖信息, 以及未捕获返回值的配置变更, 无法保证静态检出
+这些情况继续由运行时校验, 类型检查不替代运行时保护
+
+## 🌿 延迟解析与失败处理
+
+```ts
+import { lazy, ripple } from 'cyrenejs';
+
+const Report = ripple({ users: lazy(() => Users) }, ({ users }) => ({
+  run: () => users.resolve().describe(),
+}));
+```
+
+`lazy()` 回调只返回声明, 应保持稳定且无副作用
+回调在注册构图时求值, 解析和诊断不会重新求值; 强依赖环提前校验, 实际异步等待环在运行时检测
+
+读取 `app.ripples.key` 或调用 `resolve()` 时, 未使用的 lazy 目标不初始化
+没有 `start()` / `init()`, 也不会预先创建全部注册项
+
+工厂通过 deps / lazy 表达依赖, 避免在工厂内等待同一容器的公共解析或关闭操作而形成自等待
+
+初始化期间, 仅调用异步 lazy 的 `resolve()` 不建立等待边; `await`、返回给异步工厂或调用 `then` / `catch` / `finally` 时才登记
+此时句柄按目标实例复用 Promise 包装, 与公共解析入口的 Promise 身份不同; 消费者就绪后直接返回解析结果
+回调链也计入等待关系, 即使调用方只用它观察结果
+
+同步创建失败直接抛错, 异步创建失败通过 Promise 拒绝; singleton 缓存失败, transient 下次解析重新创建
+解析失败保留已创建资源以便诊断, 调用方负责 `dispose()`
+未知 key, 未注册声明或关闭后的访问会同步抛错
+
+## ⏳ 同步与异步
+
+工厂和全部强依赖都同步时, 直接返回实例; 工厂或任意强依赖异步时, 返回 Promise
+异步性沿强依赖传播, 工厂收到的依赖仍然是已经创建好的实例
+lazy 目标的异步性不影响消费者, 只影响句柄 `resolve()` 的返回值
+普通 Promise 输入原样传递, 不视为异步依赖
+
+```ts
+const Config = ripple(() => ({ name: 'demo' }));
+const Database = ripple(async () => ({ query: () => ['Alice'] }));
+const Users = ripple({ database: Database }, ({ database }) => ({
+  list: () => database.query(),
+}));
+const app = new Cyrene().add({ config: Config, database: Database, users: Users });
+
+app.ripples.config.name; // 同步, 无需 await
+const users = await app.ripples.users; // 强依赖异步, 需要 await
+users.list();
+await app.dispose();
+```
+
+属性入口只读, 返回真实实例; 同一异步单例完成后仍返回同一个 Promise
+工厂返回 `T | Promise<T>` 时, 解析结果也保留该联合类型; 擦除声明类型后可能需要 `await`
+
+## 🌱 Transient 与创建时机
+
+`transient` 适合需要独立可变状态的工作对象, 如每次任务的收集器或构建器
+它保证每次解析重新执行工厂; 如果工厂主动返回同一对象, 容器不会复制该对象
+
+```ts
+const Job = ripple(() => ({ messages: [] as string[] }), { lifetime: 'transient' });
+const Worker = ripple({ job: Job }, ({ job }) => ({ job }));
+const Runner = ripple({ job: lazy(() => Job) }, ({ job }) => ({
+  createJob: () => job.resolve(),
+}));
+const app = new Cyrene().add({ job: Job, worker: Worker, runner: Runner });
+
+app.resolve(Job) !== app.resolve(Job); // 每次创建
+app.ripples.worker.job === app.ripples.worker.job; // singleton 保留首次注入
+app.ripples.runner.createJob() !== app.ripples.runner.createJob(); // lazy 每次创建
+await app.dispose();
+```
+
+| 操作                                                 | transient 的创建时机                         |
+| ---------------------------------------------------- | -------------------------------------------- |
+| `ripple()`、`add()`、`override()`、`inspect()`       | 不执行工厂                                   |
+| 读取 `app.ripples.key`、调用 `resolve(key / Ripple)` | 每次解析执行工厂                             |
+| 注入强依赖                                           | 消费者初始化时, 每个输入属性分别解析一次     |
+| 注入 singleton                                       | singleton 首次初始化时创建, 之后持有同一引用 |
+| 注入 transient                                       | 每次消费者初始化时重新创建                   |
+| `lazy.resolve()`                                     | 每次调用创建, 仅注入句柄不会创建             |
+| 并发异步解析                                         | 各自初始化, 返回不同 Promise, 不合并请求     |
+
+创建时先解析强依赖, 等异步强依赖就绪后才执行工厂; transient 自身也可以共享 singleton 依赖
+失败不会自动重试, 但下一次显式解析会重新尝试; singleton 依赖的失败缓存仍然有效
+初始化链中递归创建同一声明会被拒绝, 避免 transient 无限展开; 就绪后的 lazy 可再次创建同声明实例
+`inspect()` 的 state 表示该注册项最近一次初始化状态变化, 不枚举 transient 实例或表示全部并发任务的状态
+
+成功返回的 owned transient 与 singleton 一样保留到容器 `dispose()` 时统一释放
+不会在一次方法调用结束后自动释放, 也不提供请求级作用域; 长期运行的容器应控制创建数量
 
 ## 🍃 资源释放
 
 `await using` 会在离开作用域时释放 Cyrene, 也可以显式调用 `await app.dispose()`
 
-运行时等待已经开始的初始化结束, 再按依赖关系清理实例
-清理方法优先使用 `ripple` 配置中的 `dispose`, 其次是 `Symbol.asyncDispose` 和 `Symbol.dispose`
+实例通过 `Symbol.asyncDispose` 或 `Symbol.dispose` 表达清理行为, 前者优先
+容器按首次成功创建完成的逆序逐一等待清理, 同一对象只释放一次
 
-通过 `bindings` 传入的外部值由原持有者管理, Cyrene 不会自动释放它们
+```ts
+const Database = ripple(async () => {
+  const connection = await openConnection();
 
-外部对象被 factory 原样返回时仍为借用资源, 对它配置显式 `dispose` 会使解析失败。
-多个定义返回同一对象时合并资源依赖并只释放一次; 显式清理优先于自动清理。
-共享对象的多个显式清理方法必须是同一函数引用, 否则后完成的解析报错, 已登记的资源仍会清理。
+  return {
+    query: connection.query.bind(connection),
+
+    async [Symbol.asyncDispose]() {
+      await connection.close();
+    },
+  };
+});
+```
+
+示例中的 `openConnection` 由应用选择的数据库驱动提供
+不带 Symbol 清理方法的实例直接跳过; 普通 `.dispose()` 和选项式清理回调不参与此协议
+
+默认资源由容器持有; 对外部实例使用 `ownership: 'borrowed'`, 或作为普通输入传递
+同一对象混用 owned / borrowed 会报所有权冲突, 清理错误聚合后报告
+
+`dispose()` 幂等, 立即停止接收新解析, 等待已接收的初始化结束后再清理资源
+强依赖先创建后释放, 消费者的清理方法仍可使用它们
+后来激活的 lazy 依赖和资源别名不额外进行拓扑排序, 清理顺序仍按首次创建完成的时间决定
+
+应用应先停止接收业务任务并等待已有任务结束, 再关闭容器
+工厂返回前抛错时, 内部已分配但未交付的资源由工厂自行清理
 
 <a id="agent"></a>
 
 ## 🤖 Agent
 
-Cyrene 随 npm 包提供 [cyrenejs skill](./skills/cyrenejs/SKILL.md), 帮助编码 Agent 正确使用依赖定义、Token 绑定、延迟解析和资源释放。
+Cyrene 随 npm 包提供 [cyrenejs skill](./skills/cyrenejs/SKILL.md), 帮助编码 Agent 正确使用声明注册, 首次解析前替换, 延迟解析和资源释放
 
 在使用 Cyrene 的项目中安装 `cyrenejs` 后, 可以通过 [skills-npm](https://github.com/antfu/skills-npm) 将 skill 链接到 Agent 的技能目录:
 
@@ -179,7 +331,8 @@ npm install -D skills-npm
 npx skills-npm setup
 ```
 
-`setup` 会自动检测 Agent、完成首次同步, 并将同步命令追加到 `package.json` 的 `prepare` 脚本, 同时为生成的链接添加 `.gitignore` 规则。之后安装或更新依赖时会自动同步, 让 skill 随项目使用的包版本一起更新。
+`setup` 会自动检测 Agent, 完成首次同步, 并将同步命令追加到 `package.json` 的 `prepare` 脚本, 同时为生成的链接添加 `.gitignore` 规则
+之后安装或更新依赖时会自动同步, 让 skill 随项目使用的包版本一起更新
 
 如果只想手动同步, 可以运行:
 

@@ -60,13 +60,13 @@ export default defineConfig({
       'no-unneeded-ternary': 'error',
 
       // 最大块嵌套层级
-      'max-depth': ['warn', { max: 4 }],
+      'max-depth': ['error', { max: 4 }],
 
       // 圈复杂度
-      complexity: ['warn', { max: 12 }],
+      complexity: ['error', { max: 12 }],
 
       // foo(bar(baz(qux()))) 这种调用嵌套
-      'unicorn/max-nested-calls': ['warn', { max: 3 }],
+      'unicorn/max-nested-calls': ['error', { max: 3 }],
 
       'stylistic/padding-line-between-statements': [
         'error',
@@ -91,7 +91,18 @@ export default defineConfig({
           prev: ['multiline-const', 'multiline-let', 'multiline-var'],
           next: '*',
         },
+        {
+          blankLine: 'always',
+          prev: '*',
+          next: 'return',
+        },
+        {
+          blankLine: 'always',
+          prev: ['interface', 'type', 'enum'],
+          next: ['interface', 'type', 'enum'],
+        },
       ],
+      'stylistic/lines-between-class-members': ['error', 'always'],
     },
     options: {
       typeAware: true,

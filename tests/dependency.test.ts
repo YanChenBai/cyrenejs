@@ -1,136 +1,101 @@
-import { describe, expect, expectTypeOf, it, vi } from 'vite-plus/test';
+import { expect, expectTypeOf, it, vi } from 'vite-plus/test';
 
-import { Cyrene, ripple, token } from '../src/index.ts';
-import type { Binding, DependencyRef } from '../src/index.ts';
+import { Cyrene, InvalidDependencyError, isRipple, ripple } from '../src/index.ts';
 
-describe('依赖定义与输入', () => {
-  it('推导参数和异步实例类型, 声明时不执行工厂', async () => {
-    const Config = token<{ prefix: string }>('Config');
+it('无 ID 声明、两种工厂重载与按 key 的异步结果推导', async () => {
+  const config = ripple(() => ({ prefix: 'hello' }));
 
-    const factory = vi.fn(
-      async ({ config }: { config: { prefix: string } }, name: string, count: number = 1) => ({
-        label: config.prefix + name,
-        count,
-      }),
-    );
+  const service = ripple({ config, count: 2 }, async ({ config, count }) => ({
+    label: config.prefix,
+    count,
+  }));
 
-    const service = ripple({ config: Config }, factory);
-    const ref = service('users', 2);
-    expect(factory).not.toHaveBeenCalled();
+  const app = new Cyrene().add({ config, service });
+  const result = await app.resolve('service');
+  expectTypeOf(result).toEqualTypeOf<{ label: string; count: 2 }>();
+  expect(result).toEqual({ label: 'hello', count: 2 });
+  expect(isRipple(service)).toBe(true);
+  expect(isRipple({})).toBe(false);
+  expect('id' in service).toBe(false);
+  await app.dispose();
+});
 
-    const app = new Cyrene({
-      ripples: { users: ref },
-      bindings: [{ token: Config, value: { prefix: 'test:' } }],
-    });
+it('普通输入保留 Symbol、Promise、函数和嵌套对象', async () => {
+  const key = Symbol('key');
+  const callback = vi.fn();
+  const promise = Promise.resolve(1);
+  const nested = { child: ripple(vi.fn()) };
+  const service = ripple({ [key]: 42, callback, promise, nested }, deps => deps);
+  const app = new Cyrene().add('service', service);
+  const result = app.resolve('service');
+  expect(result[key]).toBe(42);
+  expect(result.callback).toBe(callback);
+  expect(result.promise).toBe(promise);
+  expect(result.nested).toBe(nested);
+  expect(app.inspect().nodes).toHaveLength(1);
+  await app.dispose();
+});
 
-    expect(factory).not.toHaveBeenCalled();
-    const result = await app.start();
-    expectTypeOf(result.users).toEqualTypeOf<{ label: string; count: number }>();
-    expect(result.users).toEqual({ label: 'test:users', count: 2 });
-    expect(await app.resolve(ref)).toBe(result.users);
-    await app.dispose();
-  });
+it('注入真实对象，私有字段、构造函数与对象身份保持不变', async () => {
+  class Database {
+    #count = 42;
 
-  it('保留普通值, 函数, 嵌套对象和 Symbol 键', async () => {
-    const symbol = Symbol('input');
-    const callback = vi.fn();
-    class Example {}
-    const hidden = ripple({}, vi.fn());
-    const nested = { hidden };
-    const factory = ripple({ callback, nested, Example, [symbol]: 42 }, values => values);
-    const app = new Cyrene();
-    const result = await app.resolve(factory);
-    expect(result.callback).toBe(callback);
-    expect(result.nested).toBe(nested);
-    expect(result.Example).toBe(Example);
-    expect(result[symbol]).toBe(42);
-    expect(callback).not.toHaveBeenCalled();
-    const fn = ripple({}, () => callback);
-    expect(await app.resolve(fn)).toBe(callback);
-    await app.dispose();
-  });
+    read() {
+      return this.#count;
+    }
+  }
+  const database = ripple(() => new Database());
+  const service = ripple({ database }, deps => deps);
+  const app = new Cyrene().add({ database, service });
+  const value = app.resolve('service');
+  expect(value.database).toBe(app.resolve('database'));
+  expect(value.database).toBeInstanceOf(Database);
+  expect(value.database.read()).toBe(42);
+  await app.dispose();
+});
 
-  it('区分定义与 Ref 身份, 隔离不同运行时的缓存', async () => {
-    const service = ripple({}, () => ({}));
-    const a = service();
-    const b = service();
-    const app = new Cyrene();
-    const other = new Cyrene();
-    const instance = await app.resolve(service);
-    expect(await app.resolve(service)).toBe(instance);
-    expect(await other.resolve(service)).not.toBe(instance);
-    const first = await app.resolve(a);
-    expect(first).not.toBe(instance);
-    expect(await app.resolve(a)).toBe(first);
-    expect(await app.resolve(b)).not.toBe(first);
-    await Promise.all([app.dispose(), other.dispose()]);
-  });
+it('相同声明在不同容器中拥有独立实例', async () => {
+  const service = ripple(() => ({}), { lifetime: 'singleton' });
+  const left = new Cyrene().add('left', service);
+  const right = new Cyrene().add('right', service);
+  expect(left.resolve('left')).not.toBe(right.resolve('right'));
+  await left.dispose();
+  await right.dispose();
+});
 
-  it('快照保存声明, 支持外部 undefined 和函数值', async () => {
-    const Value = token<undefined>('Value');
-    const Handler = token<() => void>('Handler');
-    const handler = vi.fn();
-    const inputs = { value: 1 };
-    const source = ripple(inputs, ({ value }) => value);
-    inputs.value = 2;
-    const ripples = { value: source, empty: Value, handler: Handler };
-    const binding = { token: Handler, value: handler };
+it('无依赖重载不接收隐藏参数，并发解析只执行一次工厂', async () => {
+  const factory = vi.fn(() => ({}));
+  const app = new Cyrene().add('service', ripple(factory));
+  const [first, second] = [app.resolve('service'), app.resolve('service')];
+  expect(first).toBe(second);
+  expect(factory).toHaveBeenCalledExactlyOnceWith();
+  await app.dispose();
+});
 
-    const app = new Cyrene({
-      ripples,
-      bindings: [{ token: Value, value: undefined }, binding],
-    });
+it('拒绝未知 lifetime 与旧清理配置', () => {
+  expect(() => ripple(() => ({}), { lifetime: 'scoped' } as never)).toThrow(InvalidDependencyError);
+  expect(() => ripple(() => ({}), { dispose: () => {} } as never)).toThrow(InvalidDependencyError);
+});
 
-    ripples.value = ripple({}, () => 3);
-    binding.value = vi.fn();
-    const result = await app.start();
-    expect(result).toEqual({ value: 1, empty: undefined, handler });
-    expect(handler).not.toHaveBeenCalled();
-    await app.dispose();
-  });
+it('独立 add 后可按 Ripple 精确推导，与 key 解析共享实例', async () => {
+  const service = ripple(() => ({ value: 42 }));
+  const app = new Cyrene();
+  app.add('service', service);
+  const value = app.resolve(service);
+  expectTypeOf(value).toEqualTypeOf<{ value: number }>();
+  expect(value).toBe(app.resolve('service'));
+  await app.dispose();
+});
 
-  it('校验公开 API 的类型边界', () => {
-    const required = ripple({}, (_deps, value: string) => value.length);
-    const optional = ripple({}, (_deps, value = 1) => value);
-    const rest = ripple({}, (_deps, ...values: number[]) => values.length);
-    const mixed = ripple({}, (_deps, name: string, retry = 3) => ({ name, retry }));
-    const Count = token<number>('Count');
-    expectTypeOf(optional()).toEqualTypeOf<DependencyRef<number>>();
-    expectTypeOf(rest(1, 2)).toEqualTypeOf<DependencyRef<number>>();
-    expectTypeOf(mixed('users')).toEqualTypeOf<DependencyRef<{ name: string; retry: number }>>();
-    expectTypeOf(required('abc')).toEqualTypeOf<ReturnType<typeof required>>();
-
-    // 仅做编译期检查, 非法调用不进入运行时
-    const checkInvalidCalls = () => {
-      // @ts-expect-error 参数类型必须匹配
-      required(123);
-      // @ts-expect-error 默认参数保留类型约束
-      optional('no');
-      // @ts-expect-error 缺少必填参数
-      required();
-      // @ts-expect-error 参数化定义不能直接作为入口
-      new Cyrene({ ripples: { required } });
-      // @ts-expect-error 可选参数也需显式创建 Ref
-      void new Cyrene().resolve(optional);
-      // @ts-expect-error rest 参数也需显式创建 Ref
-      void new Cyrene().resolve(rest);
-      // @ts-expect-error 参数化定义不能直接注入
-      ripple({ required }, () => 1);
-      // @ts-expect-error 精确绑定类型检查
-      const bad: Binding<number> = { token: Count, value: 'no' };
-      void bad;
-      // @ts-expect-error 异构 bindings 也应校验 Token 与实现的关系
-      new Cyrene({ bindings: [{ token: Count, value: 'no' }] });
-      // @ts-expect-error dependency binding 的实例类型必须匹配
-      new Cyrene({ bindings: [{ token: Count, dependency: ripple({}, () => 'no') }] });
-      // @ts-expect-error 已移除 scoped
-      ripple({}, () => 1, { lifetime: 'scoped' });
-      // @ts-expect-error 已移除 add
-      new Cyrene().add({});
-      // @ts-expect-error 已移除 createScope
-      new Cyrene().createScope();
-    };
-
-    expectTypeOf(checkInvalidCalls).toBeFunction();
-  });
+it('原声明与当前替身都解析替换后的单例，陌生声明不会隐式注册', async () => {
+  const original = ripple(() => ({ value: 1 }));
+  const replacement = ripple(() => ({ value: 2 }));
+  const app = new Cyrene().add('service', original);
+  app.override('service', replacement);
+  expect(app.resolve(original)).toBe(app.resolve(replacement));
+  expect(app.resolve(original)).toEqual({ value: 2 });
+  expect(() => app.resolve(ripple(() => ({ value: 2 })))).toThrow('Unregistered Ripple');
+  expect(() => app.resolve({} as never)).toThrow(InvalidDependencyError);
+  await app.dispose();
+  expect(() => app.resolve(original)).toThrow('disposed');
 });

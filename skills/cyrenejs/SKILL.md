@@ -10,8 +10,9 @@ Dependencies reference Ripple objects; ordinary inputs retain their values and t
 
 Create new Cyrene() with no options. There is no start/init or startupFailure.
 Register every dependency with app.add({ key: Declaration }) or app.add('key', Declaration).
-Each add validates the whole graph before publishing; register prerequisites first or use one batch.
-Duplicate keys, duplicate declarations under different keys, and missing dependencies are rejected.
+Registration order is unrestricted, including across separate add calls.
+Each add checks declaration validity and duplicate keys or identities, without traversing dependencies.
+The first resolution validates the complete graph before any factory runs; missing dependencies and strong cycles are rejected.
 
 add mutates and returns the same container. Chain calls or capture the returned container to accumulate
 key types and app.ripples.key completion. Standalone add calls cannot change the original variable's generic type; uncaptured keys
@@ -20,13 +21,13 @@ resolve(Ripple) infers the result directly from the declaration, even after stan
 Original declarations and current replacements locate the same registration and use its current lifetime.
 
 override(key, replacement) is synchronous and only allowed before the first ripples.key access or resolve.
-The original declaration still locates the registration after replacement. New dependencies must be
-registered and replacement results must match the original type and sync/async contract when key types are known.
+The original declaration still locates the registration after replacement. New dependencies may be added later but must be
+registered before the first resolution and replacement results must match the original type and sync/async contract when key types are known.
 Configuration locks immediately on activation, even if initialization fails.
-Ripple types retain dependency inputs. add/override reject statically identifiable strong cycles;
-lazy edges remain allowed. Capture or chain override results to preserve the updated graph type.
-Structurally identical declarations, dynamic keys, erased input types, and uncaptured mutations
-may evade static checks; runtime validation remains authoritative.
+Dependency graph checks use runtime declaration identity, not structural TypeScript types.
+add/override allow temporarily incomplete or cyclic configurations; replacement result and sync/async
+contracts remain type-checked. Strong cycles are rejected before factories run; lazy waiting cycles
+are detected during initialization.
 
 app.ripples.key, resolve(key), and resolve(Ripple) initialize on demand. Synchronous factories with
 synchronous strong dependencies return real instances directly; an async factory or strong dependency
@@ -66,5 +67,6 @@ Synchronous creation failures and entry errors throw; asynchronous creation fail
 
 Use inspect and formatGraph for diagnostics; nodes contain only key and state.
 State is the latest initialization state transition for that key, not an aggregate of concurrent transient instances.
-Graph validation runs automatically on add and override. Validate with vp check, vp test run, vp pack,
+Graph validation runs on first resolution or explicit inspect. inspect does not lock configuration;
+configuration changes invalidate the cached graph. Lazy target callbacks run during graph construction. Validate with vp check, vp test run, vp pack,
 and an independent consumer declaration emit when public types change.

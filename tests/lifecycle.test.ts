@@ -114,7 +114,7 @@ it('lazy 注册回调只在构图时求值，解析和诊断不重新求值', as
   const target = vi.fn(() => later);
   const root = ripple({ later: lazy(target) }, deps => deps);
   const app = new Cyrene().add({ root, later });
-  expect(target).toHaveBeenCalledOnce();
+  expect(target).not.toHaveBeenCalled();
   app.inspect();
   const value = app.resolve('root');
   value.later.resolve();

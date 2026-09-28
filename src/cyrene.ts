@@ -5,9 +5,8 @@ import {
   InvalidDependencyError,
   ResolutionError,
 } from './errors.ts';
-import type { Acyclic, ReplaceDependency } from './graph-types.ts';
-import { createRegistry } from './registry.ts';
-import type { Registry } from './registry.ts';
+import { compileRegistry } from './registry.ts';
+import type { Registration, Registry } from './registry.ts';
 import { ResourceStore } from './resources.ts';
 import type {
   Dependency,
@@ -22,6 +21,12 @@ import type {
 } from './types.ts';
 import { inputEntries } from './utils.ts';
 import { assertEntries } from './validation.ts';
+
+type ReplaceDependency<T extends DependencyEntries, K extends string, D extends Dependency> = Omit<
+  T,
+  K
+> &
+  Record<K, D>;
 
 interface Resolution {
   key: string;
@@ -57,7 +62,11 @@ export class Cyrene<
   TRipples extends DependencyEntries = {},
   TImplementations extends DependencyEntries = TRipples,
 > {
-  #registry: Registry = new Map();
+  #registrations = new Map<string, Registration>();
+
+  #identities = new Map<Dependency, string>();
+
+  #registry?: Registry;
 
   #cache = new Map<string, Resolution>();
 
@@ -88,11 +97,11 @@ export class Cyrene<
   }
 
   add<const T extends DependencyEntries>(
-    entries: T & ValidRipples<T> & NoInfer<Acyclic<TRipples & T, TImplementations & T>>,
+    entries: T & ValidRipples<T>,
   ): Cyrene<TRipples & T, TImplementations & T>;
   add<const K extends string, const D extends Dependency>(
     key: K,
-    declaration: D & NoInfer<Acyclic<TRipples & Record<K, D>, TImplementations & Record<K, D>>>,
+    declaration: D,
   ): Cyrene<TRipples & Record<K, D>, TImplementations & Record<K, D>>;
 
   /** 同一对象原地注册并返回；链式调用累积 key 类型。失败不会污染原注册表。 */
@@ -104,24 +113,36 @@ export class Cyrene<
 
     assertEntries(incoming);
 
-    const registrations = new Map(this.#registry);
+    const entries = Object.entries(incoming);
+    const identities = new Map<Dependency, string>();
 
-    for (const [key, original] of Object.entries(incoming)) {
-      if (registrations.has(key)) {
+    // 整批检查通过后才写入，避免失败留下部分声明或身份索引。
+    for (const [key, original] of entries) {
+      if (this.#registrations.has(key)) {
         throw new InvalidDependencyError(`Duplicate registration key: ${key}`);
       }
 
-      registrations.set(key, { original, implementation: original, dependencies: new Map() });
+      assertDependency(original);
+      this.#assertIdentity(original, key);
+      const existing = identities.get(original);
+
+      if (existing !== undefined) {
+        throw new InvalidDependencyError(`Ripple registered more than once: ${existing}, ${key}`);
+      }
+
+      identities.set(original, key);
     }
 
-    this.#registry = createRegistry(registrations);
-
-    for (const key of Object.keys(incoming)) {
+    for (const [key, original] of entries) {
+      this.#registrations.set(key, { original, implementation: original });
+      this.#identities.set(original, key);
       Object.defineProperty(this.#ripples, key, {
         enumerable: true,
         get: () => this.resolve(key),
       });
     }
+
+    this.#registry = undefined;
 
     return this;
   }
@@ -134,15 +155,22 @@ export class Cyrene<
         K extends keyof TRipples ? NoInfer<InferInput<TRipples[K]>> : unknown,
         unknown,
         K extends keyof TRipples ? NoInfer<DependencyAsync<TRipples[K]>> : boolean
-      > &
-      NoInfer<Acyclic<TRipples, ReplaceDependency<TImplementations, K, D>>>,
+      >,
   ): Cyrene<TRipples, ReplaceDependency<TImplementations, K, D>>;
   override(key: string, replacement: Dependency): unknown {
     this.#assertConfiguring();
     this.#require(key);
-    const registrations = new Map(this.#registry);
-    registrations.set(key, { ...registrations.get(key)!, implementation: replacement });
-    this.#registry = createRegistry(registrations);
+    assertDependency(replacement);
+    this.#assertIdentity(replacement, key);
+    const registration = this.#registrations.get(key)!;
+
+    if (registration.implementation !== registration.original) {
+      this.#identities.delete(registration.implementation);
+    }
+
+    this.#registrations.set(key, { ...registration, implementation: replacement });
+    this.#identities.set(replacement, key);
+    this.#registry = undefined;
 
     return this;
   }
@@ -161,17 +189,21 @@ export class Cyrene<
     const key = this.#resolveKey(target);
     this.#require(key);
 
+    this.#compile();
+
     return this.#resolve(key);
   }
 
   inspect(): DependencyGraph {
+    const registry = this.#compile();
+
     return {
-      roots: [...this.#registry.keys()],
-      nodes: [...this.#registry.keys()].map(key => ({
+      roots: [...registry.keys()],
+      nodes: [...registry.keys()].map(key => ({
         key,
         state: this.#states.get(key) ?? 'registered',
       })),
-      edges: [...this.#registry.values()].flatMap(node =>
+      edges: [...registry.values()].flatMap(node =>
         [...node.dependencies.values()].map(edge => ({ ...edge })),
       ),
     };
@@ -200,8 +232,22 @@ export class Cyrene<
     }
   }
 
+  #compile(): Registry {
+    this.#registry ??= compileRegistry(this.#registrations);
+
+    return this.#registry;
+  }
+
+  #assertIdentity(target: Dependency, key: string): void {
+    const existing = this.#identities.get(target);
+
+    if (existing !== undefined && existing !== key) {
+      throw new InvalidDependencyError(`Ripple registered more than once: ${existing}, ${key}`);
+    }
+  }
+
   #require(key: string): void {
-    if (!this.#registry.has(key)) {
+    if (!this.#registrations.has(key)) {
       throw new InvalidDependencyError(`Unknown registration key: ${key}`);
     }
   }
@@ -213,10 +259,10 @@ export class Cyrene<
 
     assertDependency(target);
 
-    for (const [key, registration] of this.#registry) {
-      if (registration.original === target || registration.implementation === target) {
-        return key;
-      }
+    const key = this.#identities.get(target);
+
+    if (key !== undefined) {
+      return key;
     }
 
     throw new InvalidDependencyError('Unregistered Ripple declaration');
@@ -261,7 +307,7 @@ export class Cyrene<
       waiting: new Set(),
     };
 
-    const definition = getDefinition(this.#registry.get(key)!.implementation);
+    const definition = getDefinition(this.#registry!.get(key)!.implementation);
 
     if (definition.options.lifetime !== 'transient') {
       this.#cache.set(key, record);
@@ -347,7 +393,7 @@ export class Cyrene<
   }
 
   #complete(record: Resolution, value: unknown): unknown {
-    const definition = getDefinition(this.#registry.get(record.key)!.implementation);
+    const definition = getDefinition(this.#registry!.get(record.key)!.implementation);
     this.#resources.add(value, definition.options.ownership ?? 'owned');
     record.state = 'ready';
     this.#states.set(record.key, 'ready');
@@ -383,7 +429,7 @@ export class Cyrene<
   }
 
   #initialize(record: Resolution): unknown {
-    const registration = this.#registry.get(record.key)!;
+    const registration = this.#registry!.get(record.key)!;
     const definition = getDefinition(registration.implementation);
     const resolved: Record<PropertyKey, unknown> = {};
     const pending: Promise<void>[] = [];
@@ -483,7 +529,9 @@ export class Cyrene<
       this.#state = 'disposed';
       this.#cache.clear();
       this.#states.clear();
-      this.#registry.clear();
+      this.#registrations.clear();
+      this.#identities.clear();
+      this.#registry = undefined;
     }
   }
 }

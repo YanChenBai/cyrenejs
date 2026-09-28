@@ -7,13 +7,16 @@ import { inputEntries } from './utils.ts';
 export interface Registration {
   original: Dependency;
   implementation: Dependency;
+}
+
+export interface CompiledRegistration extends Registration {
   dependencies: Map<PropertyKey, GraphEdge>;
 }
 
-export type Registry = Map<string, Registration>;
+export type Registry = Map<string, CompiledRegistration>;
 
 /** 原始声明和当前替身都定位同一个 key，让消费者无需改写依赖。 */
-export function createRegistry(registrations: ReadonlyMap<string, Registration>): Registry {
+export function compileRegistry(registrations: ReadonlyMap<string, Registration>): Registry {
   const identities = new Map<Dependency, string>();
   const registry: Registry = new Map();
 
@@ -47,7 +50,7 @@ function registerIdentity(identities: Map<Dependency, string>, target: Dependenc
 function connectDependencies(
   identities: Map<Dependency, string>,
   key: string,
-  registration: Registration,
+  registration: CompiledRegistration,
 ): void {
   const definition = getDefinition(registration.implementation);
 
@@ -74,12 +77,14 @@ function connectDependencies(
   }
 }
 
-/** 声明阶段只检查强依赖环；lazy 的真实等待环在解析时检查。 */
+/** 构图只检查强依赖环；lazy 的真实等待环在解析时检查。 */
 function validateRegistry(registry: Registry): void {
   const visited = new Set<string>();
   const active = new Set<string>();
 
-  const visit = (key: string, path: string[]) => {
+  const path: string[] = [];
+
+  const visit = (key: string) => {
     if (active.has(key)) {
       throw new CircularDependencyError(`Circular dependency: ${[...path, key].join(' -> ')}`);
     }
@@ -89,18 +94,20 @@ function validateRegistry(registry: Registry): void {
     }
 
     active.add(key);
+    path.push(key);
 
     for (const edge of registry.get(key)!.dependencies.values()) {
       if (edge.kind === 'dependency') {
-        visit(edge.to, [...path, key]);
+        visit(edge.to);
       }
     }
 
+    path.pop();
     active.delete(key);
     visited.add(key);
   };
 
   for (const key of registry.keys()) {
-    visit(key, []);
+    visit(key);
   }
 }

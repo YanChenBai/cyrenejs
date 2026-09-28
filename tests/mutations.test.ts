@@ -1,6 +1,12 @@
 import { expect, expectTypeOf, it, vi } from 'vite-plus/test';
 
-import { CircularDependencyError, Cyrene, InvalidDependencyError, ripple } from '../src/index.ts';
+import {
+  CircularDependencyError,
+  Cyrene,
+  InvalidDependencyError,
+  lazy,
+  ripple,
+} from '../src/index.ts';
 
 it('两种 add 原地注册，链式调用保留 key 类型且不运行工厂', async () => {
   const factory = vi.fn(() => 42);
@@ -13,11 +19,12 @@ it('两种 add 原地注册，链式调用保留 key 类型且不运行工厂', 
   await app.dispose();
 });
 
-it('分开调用 add 也能注册，批量注册允许依赖在同批稍后出现', async () => {
+it('分开调用 add 允许先注册消费者，再注册依赖', async () => {
   const config = ripple(() => 42);
   const root = ripple({ config }, deps => deps);
   const app = new Cyrene();
-  app.add({ root, config });
+  app.add('root', root);
+  app.add({ config });
   app.add(
     'extra',
     ripple(() => 'extra'),
@@ -27,7 +34,7 @@ it('分开调用 add 也能注册，批量注册允许依赖在同批稍后出�
   await app.dispose();
 });
 
-it('重复 key、重复声明、缺失依赖均立即报错并保留原注册表', async () => {
+it('重复 key、重复声明立即报错并保留原注册表', async () => {
   const config = ripple(() => ({}));
   const app = new Cyrene().add('config', config);
   expect(() =>
@@ -37,13 +44,6 @@ it('重复 key、重复声明、缺失依赖均立即报错并保留原注册表
     ),
   ).toThrow('Duplicate registration key');
   expect(() => app.add('alias', config)).toThrow('registered more than once');
-  const missing = ripple(() => ({}));
-  expect(() =>
-    app.add(
-      'root',
-      ripple({ missing }, deps => deps),
-    ),
-  ).toThrow('Unregistered dependency');
   expect(app.inspect().nodes.map(node => node.key)).toEqual(['config']);
   await app.dispose();
 });
@@ -69,17 +69,15 @@ it('首次解析前 override 根据原始声明重定向依赖，允许再次覆
   await app.dispose();
 });
 
-it('override 校验新依赖和循环，失败不会更换原配方', async () => {
+it('override 保留身份检查，循环延迟到解析时报错', async () => {
   const database = ripple(() => ({ value: 1 }));
   const users = ripple({ database }, ({ database }) => ({ value: database.value }));
   const app = new Cyrene().add({ database, users });
   const cyclic = ripple({ users }, ({ users }) => ({ value: users.value }));
-  // @ts-expect-error 同时验证类型拦截与绕过类型后的运行时保护。
-  expect(() => app.override('database', cyclic)).toThrow(CircularDependencyError);
+  app.override('database', cyclic);
   expect(() => app.override('unknown', database)).toThrow('Unknown registration key');
-  // @ts-expect-error 替换使 database 强依赖自身。
   expect(() => app.override('database', users)).toThrow('registered more than once');
-  expect(app.resolve('database').value).toBe(1);
+  expect(() => app.resolve('database')).toThrow(CircularDependencyError);
   await app.dispose();
 });
 
@@ -141,7 +139,7 @@ it('特殊字符串 key 不受 Object 原型字段影响', async () => {
   await app.dispose();
 });
 
-it('override 后继续 add 保留原声明定位，失败重建不改变已发布邻接', async () => {
+it('override 后继续 add 保留原声明定位，诊断失败仍可继续配置', async () => {
   const database = ripple(() => ({ value: 'original' }));
   const config = ripple(() => ({ value: 'configured' }));
   const replacement = ripple({ config }, ({ config }) => ({ value: config.value }));
@@ -151,8 +149,114 @@ it('override 后继续 add 保留原声明定位，失败重建不改变已发�
   const registered = app.add('users', users);
   const before = registered.inspect();
   const invalid = ripple({ users }, ({ users }) => ({ value: users.database.value }));
-  expect(() => registered.override('database', invalid)).toThrow(CircularDependencyError);
+  registered.override('database', invalid);
+  expect(() => registered.inspect()).toThrow(CircularDependencyError);
+  registered.override('database', replacement);
   expect(registered.inspect()).toEqual(before);
   expect(registered.resolve('users').database.value).toBe('configured');
   await registered.dispose();
+});
+
+it.each(['ripples', 'resolve'] as const)(
+  '缺失依赖在 %s 首次解析时拒绝且不执行工厂',
+  async operation => {
+    const factory = vi.fn(() => 1);
+    const missing = ripple(() => 2);
+    const root = ripple({ missing }, factory);
+    const app = new Cyrene().add({ root, independent: ripple(factory) });
+    expect(() => (operation === 'ripples' ? app.ripples.independent : app.resolve('root'))).toThrow(
+      'Unregistered dependency',
+    );
+    expect(factory).not.toHaveBeenCalled();
+    expect(() => app.add({ missing })).toThrow('locked');
+    expect(() => app.resolve('root')).toThrow('Unregistered dependency');
+    await app.dispose();
+  },
+);
+
+it('override 可以引入稍后注册的依赖', async () => {
+  const original = ripple(() => 1);
+  const later = ripple(() => 42);
+  const app = new Cyrene().add({ original });
+  app.override(
+    'original',
+    ripple({ later }, ({ later }) => later),
+  );
+  app.add({ later });
+  expect(app.resolve(original)).toBe(42);
+  await app.dispose();
+});
+
+it('分批注册 lazy 前向引用时不提前求值', async () => {
+  const target = vi.fn(() => later);
+  const root = ripple({ later: lazy(target) }, deps => deps);
+  const app = new Cyrene().add({ root });
+  const later = ripple(() => 42);
+  expect(target).not.toHaveBeenCalled();
+  app.add({ later });
+  expect(app.ripples.root.later.resolve()).toBe(42);
+  expect(target).toHaveBeenCalledOnce();
+  await app.dispose();
+});
+
+it('批量注册失败不留下声明、属性或身份占用', async () => {
+  const existing = ripple(() => 1);
+  const fresh = ripple(() => 2);
+  const app = new Cyrene().add({ existing });
+  expect(() => app.add({ fresh, existing: ripple(() => 3) })).toThrow('Duplicate registration key');
+  expect(() => app.add({ fresh, alias: existing })).toThrow('registered more than once');
+  expect(() => app.add({ fresh, duplicate: fresh })).toThrow('registered more than once');
+  expect(Object.keys(app.ripples)).toEqual(['existing']);
+  expect(app.inspect().roots).toEqual(['existing']);
+  app.add({ fresh });
+  expect(app.resolve(fresh)).toBe(2);
+  await app.dispose();
+});
+
+it('替换维护原声明身份，释放旧替身身份，失败不修改索引', async () => {
+  const original = ripple(() => 1);
+  const first = ripple(() => 2);
+  const second = ripple(() => 3);
+  const other = ripple(() => 4);
+  const app = new Cyrene().add({ original, other });
+  app.override('original', first);
+  expect(() => app.add('alias', original)).toThrow('registered more than once');
+  expect(() => app.add('alias', first)).toThrow('registered more than once');
+  expect(() => app.override('original', other)).toThrow('registered more than once');
+  expect(() => app.override('original', {} as never)).toThrow(InvalidDependencyError);
+  expect(() => app.add('alias', first)).toThrow('registered more than once');
+  app.override('original', second);
+  app.add({ first });
+  app.override('original', original);
+  app.add({ second });
+  expect(app.resolve(original)).toBe(1);
+  expect(app.resolve(first)).toBe(2);
+  expect(app.resolve(second)).toBe(3);
+  await app.dispose();
+});
+
+it('inspect 编译缓存只在成功配置变更后失效，诊断失败不锁定', async () => {
+  const later = ripple(() => 42);
+  const target = vi.fn(() => later);
+  const factory = vi.fn(({ later }) => later);
+  const root = ripple({ later: lazy(target) }, factory);
+  const app = new Cyrene().add({ root });
+  expect(() => app.inspect()).toThrow('Unregistered dependency');
+  app.add({ later });
+  app.inspect();
+  app.inspect();
+  expect(target).toHaveBeenCalledTimes(2);
+  expect(factory).not.toHaveBeenCalled();
+  expect(() => app.add('duplicate', root)).toThrow();
+  expect(() => app.override('root', later)).toThrow();
+  app.inspect();
+  expect(target).toHaveBeenCalledTimes(2);
+  const replacement = ripple(() => 43);
+  app.override('later', replacement);
+  expect(target).toHaveBeenCalledTimes(2);
+  expect(app.ripples.root.resolve()).toBe(43);
+  app.inspect();
+  expect(target).toHaveBeenCalledTimes(3);
+  expect(factory).toHaveBeenCalledOnce();
+  await app.dispose();
 });

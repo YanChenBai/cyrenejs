@@ -127,13 +127,11 @@ const uncertain: number | Promise<number> = uncertainApp.ripples.optionalParent;
 const uncertainPromise: Promise<number> = uncertainApp.ripples.optionalParent;
 const definitePromise: Promise<number> = uncertainApp.ripples.alwaysAsync;
 
-// 强依赖元数据跨 declaration emit 仍可用于检查替换。
+// 替换保留返回值契约，依赖图由运行时检查。
 const database = ripple(() => ({ query: (): number => 1 }));
 const users = ripple({ database }, ({ database }) => ({ count: () => database.query() }));
 const graph = new Cyrene().add({ database }).add('users', users);
-// @ts-expect-error database -> users -> database。
 graph.override('database', ripple({ users }, ({ users }) => ({ query: () => users.count() })));
-// @ts-expect-error 直接自依赖。
 graph.override('database', ripple({ database }, ({ database }) => ({ query: () => database.query() })));
 graph.override('database', ripple({ users: lazy(() => users) }, () => ({ query: () => 2 })));
 
@@ -143,22 +141,19 @@ const right = ripple(() => ({ value: 2 }));
 const independent = new Cyrene().add({ left, right });
 independent.override('left', ripple({ right }, ({ right }) => ({ value: right.value })));
 
-// 链式 override 保留新边，检查后续替换形成的环。
+// 链式 override 允许中间配置形成环。
 const a = ripple(() => ({ a: 1 }));
 const b = ripple(() => ({ b: 1 }));
 const updated = new Cyrene().add({ a, b })
   .override('a', ripple({ b }, () => ({ a: 2 })));
-// @ts-expect-error a -> b -> a。
 updated.override('b', ripple({ a }, () => ({ b: 2 })));
 
-// 类型可见的递归声明在批量 add 时拒绝。
+// 类型可见的递归声明也允许注册，完整图留给运行时检查。
 interface A extends Dependency<{ a: number }, { b: B }> {}
 interface B extends Dependency<{ b: number }, { a: A }> {}
 declare const recursiveA: A;
 declare const recursiveB: B;
-// @ts-expect-error 注册图存在强依赖环。
 new Cyrene().add({ a: recursiveA, b: recursiveB });
-// @ts-expect-error 单项 add 闭合已有的强依赖路径。
 new Cyrene().add('a', recursiveA).add('b', recursiveB);
 
 // 依赖类型擦除或动态 key 不产生假阳性，仍由运行时检查。
@@ -198,19 +193,16 @@ const app = new Cyrene().add({ database, users });
 app.override('database', ripple({ users }, ({ users }) => ({ query: () => users.count() })));
 `,
     );
-    compile(
-      {
-        compilerOptions: {
-          target: 'ESNext',
-          module: 'NodeNext',
-          strict: true,
-          noEmit: true,
-          types: [],
-        },
-        files: [join(directory, 'cycle.ts')],
+    compile({
+      compilerOptions: {
+        target: 'ESNext',
+        module: 'NodeNext',
+        strict: true,
+        noEmit: true,
+        types: [],
       },
-      'Circular dependency',
-    );
+      files: [join(directory, 'cycle.ts')],
+    });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -59,8 +59,10 @@ alone adds no wait edge; awaiting, returning it from an async factory, or consum
 then/catch/finally does. Callback chains count even when used only for observation. Once the owner
 is ready, the handle returns the resolution result directly (cached for singleton, fresh for transient).
 
-Owned singleton and transient resources are retained until container disposal and released in reverse first-completion order.
-Transient has no per-call disposal or request scope; bound its usage in long-lived containers.
+Owned instances declaring a Symbol disposal protocol when their factory returns are retained until container
+disposal and released in reverse first-completion order. Ownership tracking uses weak references; the resource
+store does not retain plain objects or borrowed instances. Singleton resolution still caches its result.
+Transient has no per-call disposal or request scope; bound disposable resource creation in long-lived containers.
 Prefer Symbol.asyncDispose, otherwise Symbol.dispose. Ordinary dispose methods and option disposers
 are not supported. Borrowed resources and plain inputs remain application-owned.
 Shared object identities are disposed once; conflicting owned/borrowed declarations are rejected.

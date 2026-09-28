@@ -309,18 +309,22 @@ export class Cyrene<TRipples extends DependencyEntries = {}> {
       value = Promise.resolve().then(() => this.#result(record));
     }
 
-    if (owner) {
-      if (isPromise(value)) {
-        void Promise.resolve(value).then(
-          () => owner.waiting.delete(record),
-          () => owner.waiting.delete(record),
-        );
-      } else {
-        owner.waiting.delete(record);
+    if (isPromise(value)) {
+      if (owner) {
+        const release = () => {
+          owner.waiting.delete(record);
+        };
+
+        // 旁路清理同时处理成功和失败，不改变原 Promise 的身份与拒绝结果。
+        void Promise.resolve(value).then(release, release);
       }
+
+      return value;
     }
 
-    if (record.state === 'failed' && !isPromise(value)) {
+    owner?.waiting.delete(record);
+
+    if (record.state === 'failed') {
       throw record.error;
     }
 

@@ -95,6 +95,68 @@ it('同一实例所有权冲突明确报错，保留原清理责任', async () =
   expect(cleanup).toHaveBeenCalledOnce();
 });
 
+it.each(['owned', 'borrowed'] as const)('无清理方法的实例仍检查所有权冲突：%s', async ownership => {
+  const shared = {};
+  const original = ripple('original', () => shared, { ownership });
+
+  const conflicting = ripple('conflicting', () => shared, {
+    ownership: ownership === 'owned' ? 'borrowed' : 'owned',
+  });
+
+  const app = new Cyrene().use(original, conflicting);
+  expect(app.resolve(original)).toBe(shared);
+  expect(() => app.resolve(conflicting)).toThrow();
+  await app.dispose();
+});
+
+it('重复登记资源保留首次完成位置，包括原型上的清理方法', async () => {
+  const events: string[] = [];
+
+  class Resource {
+    [Symbol.dispose]() {
+      events.push('first');
+    }
+  }
+
+  const shared = new Resource();
+  const first = ripple('first', () => shared, { lifetime: 'transient' });
+  const second = ripple('second', () => ({ [Symbol.dispose]: () => events.push('second') }));
+  const app = new Cyrene().use(first, second);
+  app.resolve(first);
+  app.resolve(second);
+  app.resolve(first);
+  await app.dispose();
+  expect(events).toEqual(['second', 'first']);
+});
+
+it('清理协议 getter 在关闭时求值，借用对象不访问清理协议', async () => {
+  const cleanup = vi.fn();
+  const ownedGetter = vi.fn(() => cleanup);
+
+  const borrowedGetter = vi.fn(() => {
+    throw new Error('borrowed disposer must not be accessed');
+  });
+
+  const owned = ripple('owned', () =>
+    Object.defineProperty({}, Symbol.dispose, { get: ownedGetter }),
+  );
+
+  const borrowed = ripple(
+    'borrowed',
+    () => Object.defineProperty({}, Symbol.dispose, { get: borrowedGetter }),
+    { ownership: 'borrowed' },
+  );
+
+  const app = new Cyrene().use(owned, borrowed);
+  app.resolve(owned);
+  app.resolve(borrowed);
+  expect(ownedGetter).not.toHaveBeenCalled();
+  await app.dispose();
+  expect(ownedGetter).toHaveBeenCalledOnce();
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(borrowedGetter).not.toHaveBeenCalled();
+});
+
 it('清理失败聚合并继续，重复 dispose 不会再次调用资源', async () => {
   const cleanup = vi.fn();
   const failure = new Error('cleanup');

@@ -1,8 +1,27 @@
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
 import { expect, it, vi } from 'vite-plus/test';
 
 import { CircularDependencyError, Cyrene, DisposedError, lazy, ripple } from '../src/index.ts';
 import type { Dependency } from '../src/index.ts';
 import { deferred } from './helpers.ts';
+
+it('容器存活时普通和借用 transient 可回收，owned 资源保留至关闭', () => {
+  const fixture = fileURLToPath(new URL('./fixtures/transient-gc.ts', import.meta.url));
+
+  const result = spawnSync(
+    process.execPath,
+    ['--expose-gc', '--experimental-strip-types', fixture],
+    {
+      encoding: 'utf8',
+      timeout: 10_000,
+    },
+  );
+
+  expect(result.error).toBeUndefined();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+}, 15_000);
 
 it('transient 注册不创建，属性、key 和声明每次解析都调用工厂', async () => {
   const factory = vi.fn(() => ({}));

@@ -1,3 +1,5 @@
+import { setImmediate } from 'node:timers/promises';
+
 import { expect, it, vi } from 'vite-plus/test';
 
 import { CircularDependencyError, Cyrene, DisposedError, lazy, ripple } from '../src/index.ts';
@@ -181,6 +183,36 @@ it('lazy Promise 支持 then、catch 和 finally，并保留原始拒绝', async
   const app = new Cyrene().use(child, parent);
   expect(await app.resolve(parent)).toBe('recovered');
   expect(finalized).toHaveBeenCalledOnce();
+  await app.dispose();
+});
+
+it('仅启动的 lazy 异步失败不产生额外拒绝，稍后解析仍返回缓存的失败 Promise', async () => {
+  const gate = deferred<void>();
+  const failure = new Error('background initialization failed');
+
+  const factory = vi.fn(async () => {
+    await gate.promise;
+    throw failure;
+  });
+
+  const child = ripple('child', factory);
+
+  const parent = ripple('parent', { child: lazy(() => child) }, ({ child }) => {
+    void child.resolve();
+
+    return child;
+  });
+
+  const app = new Cyrene().use(parent);
+  const handle = app.resolve(parent);
+  const pending = app.resolve(child);
+  gate.resolve();
+  await setImmediate();
+  expect(app.inspect().nodes.find(node => node.key === 'child')?.state).toBe('failed');
+  expect(app.resolve(child)).toBe(pending);
+  expect(handle.resolve()).toBe(pending);
+  await expect(pending).rejects.toMatchObject({ cause: failure });
+  expect(factory).toHaveBeenCalledOnce();
   await app.dispose();
 });
 

@@ -35,7 +35,7 @@ export function formatGraph(graph: DependencyGraph): string {
       marker = '↗ ';
     }
 
-    const name = node.key.replace(/[\r\n\t]/g, ' ');
+    const name = sanitizeKey(node.key);
     const suffix = kind === 'lazy' ? ' [lazy]' : '';
     lines.push(`${prefix}${connector}${marker}${name}${suffix}`);
 
@@ -85,4 +85,21 @@ export function formatGraph(graph: DependencyGraph): string {
   }
 
   return lines.join('\n');
+}
+
+/** 清除终端序列及剩余控制字符，避免节点名称改变终端状态。 */
+function sanitizeKey(key: string): string {
+  // 有意匹配终端控制码；OSC 等字符串序列连同标题、链接等负载一起移除。
+  /* oxlint-disable no-control-regex */
+  const strings =
+    /(?:\u001B[P\]X^_]|[\u0090\u0098\u009D-\u009F])[\s\S]*?(?:\u0007|\u001B\\|\u009C|$)/g;
+
+  const sequences = /(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]|\u001B[ -/]*[0-~]/g;
+  /* oxlint-enable no-control-regex */
+
+  return key
+    .replace(strings, '')
+    .replace(sequences, '')
+    .replace(/[\r\n\t]/g, ' ')
+    .replace(/\p{Cc}/gu, '');
 }

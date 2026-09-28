@@ -2,7 +2,7 @@
 
 ## 模型
 
-Ripple 是无名称的不可变工厂声明；容器注册 key 是运行时服务身份。
+Ripple 是携带非空字符串 key 的不可变工厂声明；容器以原声明 key 标识运行时节点。
 每个容器独立拥有声明注册表、单例初始化缓存、待完成初始化集合和资源清理顺序。
 
 工厂依赖继续引用 Ripple 对象，普通输入不参与图。
@@ -11,33 +11,40 @@ Ripple 是无名称的不可变工厂声明；容器注册 key 是运行时服�
 
 ## 模块职责
 
-| 模块                                 | 职责                                          |
-| ------------------------------------ | --------------------------------------------- |
-| ripple / dependency                  | 工厂重载、不可变配方与声明身份                |
-| registry                             | 完整注册校验、声明到 key 的映射、强依赖环检查 |
-| cyrene                               | 解析前配置、单例解析、等待环检测、容器关闭    |
-| resources                            | 对象所有权去重与逆创建顺序清理                |
-| lazy                                 | 延迟依赖声明                                  |
-| types / validation / utils / symbols | 公共契约与输入校验                            |
-| format-graph                         | 格式化诊断快照                                |
+| 模块                    | 职责                                                  |
+| ----------------------- | ----------------------------------------------------- |
+| ripple / dependency     | 工厂重载、不可变配方与声明身份                        |
+| registry                | 依赖闭包收集、覆盖应用、身份与 key 校验、强依赖环检查 |
+| cyrene                  | 解析前配置、单例解析、等待环检测、容器关闭            |
+| resources               | 对象所有权去重与逆创建顺序清理                        |
+| lazy                    | 延迟依赖声明                                          |
+| types / utils / symbols | 公共契约与输入校验                                    |
+| format-graph            | 格式化诊断快照                                        |
 
 ## 配置阶段
 
 new Cyrene 不接收选项；没有 start、init 或启动失败策略。
-app.add(entries) 和 app.add(key, declaration) 返回同一容器；返回类型累积注册 key。
-每次配置先构建并校验新注册表，再同步发布。失败不会污染原表。
-只维护一张注册表：每个节点保存 original、implementation 和 dependencies。
-original 保留原声明的定位关系，implementation 指定当前工厂；重建时邻接集合独立复制。
-普通对象及对象展开承担注册集合组合，无需品牌类型。
-依赖必须已注册或在同批 add 中；同一 Ripple 只能对应一个 key。
+app.use(...declarations) 返回同一容器；返回类型只累积显式入口的 key。
+入口整批验证身份和重名后写入；同一声明重复 use 幂等。
+ripples 的运行时属性也只包含显式入口，内部依赖可以通过后续 use 提升为入口。
 
-override(key, replacement) 保留原注册声明的定位关系，使用替身的工厂和依赖。
-不同 key 不允许共用同一个原声明或当前替身。反复 override 只保留原声明与当前替身的映射。
+配置保存 roots 和 overrides，构图在首次解析或 inspect 时执行，成功后缓存。
+从 roots 沿有效实现的直接输入遍历强依赖和 lazy 目标，普通嵌套对象不参与遍历。
+每个节点保留 original、implementation 和 dependencies；同一原声明去重，不同原声明同 key 报错。
+发布编译结果前检查全部强依赖环，失败不缓存半成品。有效配置变更使编译缓存失效。
+lazy 回调必须稳定且无副作用，构图时求值，配置不变时无需重复求值。
 
-首次读取 ripples.key / 调用 resolve 同步锁定配置，失败也不解锁。
-没有运行时 add、override、remove，不存在资源换代与引用更新。
-合法性在配置修改时自动校验，不再提供公开 validate。
-inspect 导出的节点只包含 key 和 state，formatGraph 直接显示 key。
+override(original, replacement) 以原声明定位，保持原 key 与公开范围，结果和同步/异步契约由原声明约束。
+只遍历替身使用的依赖，原实现独有依赖不会进入图。仍被其他路径引用的依赖继续保留。
+允许先覆盖后 use，目标可达性在构图时检查；不可达覆盖（包括因上层替换而被裁剪的目标）报错。
+同一目标最后一次覆盖生效；override(original, original) 恢复原实现。
+原声明和当前替身都能解析到原 key，旧替身不再保留映射。
+一个声明不能同时占据多个槽位；同一替身不能同时用于多个覆盖或独立入口。
+
+首次读取 ripples.key / 调用 resolve 同步锁定配置，构图或初始化失败也不解锁。
+没有激活后的 use、override、remove，不存在资源换代与引用更新。
+inspect 不锁定配置也不执行工厂；roots 只包含显式入口，nodes 和 edges 包含整个有效图。
+节点只包含 key 和 state，formatGraph 直接显示原声明 key。
 
 ## 解析
 
@@ -86,14 +93,14 @@ lazy 在创建后激活以及对象别名不承诺额外的依赖拓扑释放顺
 
 ## 类型边界
 
-ripple 推导输入与 Awaited 工厂结果。
-Dependency 的第二个泛型保留输入声明，第三个泛型保留同步/异步性，只在类型层存在，不增加运行时元数据。
-链式 add 保留 key 与结果对应关系，override 使用 NoInfer 约束替身结果和同步/异步契约，避免旧 lazy 句柄类型失真。
-容器第二个泛型保存当前实现类型，链式 override 更新它。
-graph-types 只在声明结构能唯一对应 key 时建立类型边，以路径搜索检查强依赖环。
-lazy 边不参与类型搜索，同形声明、宽字符串 key、类型擦除及未捕获返回值的变更
-可能无法静态检出，仍依赖运行时检查。
-独立 app.add(...) 修改对象不会改变原变量的泛型；ripples 不会出现未捕获的新增 key 类型提示，resolve(key) 返回 unknown，
-也可通过 resolve(Ripple) 直接推导实例类型。运行时仍检查注册身份，不要用 any 掩盖此边界。
+ripple 推导 key 字面量、输入与 Awaited 工厂结果。
+Dependency 的第二个泛型保留输入声明，第三个泛型保留同步/异步性，第四个泛型保留 key。
+运行时公开只读 key，工厂配方仍保存在内部 WeakMap。
+链式 use 仅映射显式入口的 key，不在类型层递归展开依赖图。
+override 使用 NoInfer 从原声明约束替身结果和同步/异步契约，不受是否显式 use 的影响。
+强依赖环仅按运行时对象身份检查，不进行结构类型循环推导。
+独立 app.use(...) 不改变原变量泛型；接住返回值可以获得新增属性提示。
+resolve(Ripple) 始终从声明推导实例类型；仅类型已累积的 key 可通过 resolve(key) 获得精确类型，其余返回 unknown。
+显式将 Dependency 的 key 擦除为 string 会失去精确入口提示，应保留推导或标注第四个泛型。
 
 消费方声明生成测试与库打包分别验证。

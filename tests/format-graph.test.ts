@@ -3,9 +3,9 @@ import { expect, it } from 'vite-plus/test';
 import { Cyrene, formatGraph, lazy, ripple } from '../src/index.ts';
 
 it('诊断使用容器 key，保留依赖属性、lazy 边与初始化状态', async () => {
-  const database = ripple(() => ({}));
-  const root = ripple({ database, later: lazy(() => database) }, deps => deps);
-  const app = new Cyrene().add({ root, database });
+  const database = ripple('database', () => ({}));
+  const root = ripple('root', { database, later: lazy(() => database) }, deps => deps);
+  const app = new Cyrene().use(root, database);
   expect(app.inspect().nodes).toEqual([
     { key: 'root', state: 'registered' },
     { key: 'database', state: 'registered' },
@@ -24,9 +24,9 @@ it('诊断使用容器 key，保留依赖属性、lazy 边与初始化状态', a
 });
 
 it('修改诊断快照不影响解析图', async () => {
-  const dependency = ripple(() => 42);
-  const root = ripple({ dependency }, deps => deps);
-  const app = new Cyrene().add({ root, dependency });
+  const dependency = ripple('dependency', () => 42);
+  const root = ripple('root', { dependency }, deps => deps);
+  const app = new Cyrene().use(root, dependency);
   const snapshot = app.inspect();
   snapshot.edges[0]!.to = 'unknown';
   snapshot.nodes.length = 0;

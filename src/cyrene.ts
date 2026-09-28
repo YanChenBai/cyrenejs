@@ -6,7 +6,7 @@ import {
   ResolutionError,
 } from './errors.ts';
 import { compileRegistry } from './registry.ts';
-import type { Registration, Registry } from './registry.ts';
+import type { Registry } from './registry.ts';
 import { ResourceStore } from './resources.ts';
 import type {
   Dependency,
@@ -17,16 +17,9 @@ import type {
   ResolveEntries,
   InferInput,
   NodeState,
-  ValidRipples,
+  EntryDeclarations,
 } from './types.ts';
 import { inputEntries } from './utils.ts';
-import { assertEntries } from './validation.ts';
-
-type ReplaceDependency<T extends DependencyEntries, K extends string, D extends Dependency> = Omit<
-  T,
-  K
-> &
-  Record<K, D>;
 
 interface Resolution {
   key: string;
@@ -35,6 +28,7 @@ interface Resolution {
   value?: unknown;
   error?: unknown;
   executing: boolean;
+  resultDeferred?: boolean;
   /** 仅保存尚未完成的初始化等待边，不维护第二份资源依赖图。 */
   waiting: Set<Resolution>;
 }
@@ -58,11 +52,10 @@ async function settle<T>(tasks: Promise<T>[]): Promise<T[]> {
   return results.map(result => (result as PromiseFulfilledResult<T>).value);
 }
 
-export class Cyrene<
-  TRipples extends DependencyEntries = {},
-  TImplementations extends DependencyEntries = TRipples,
-> {
-  #registrations = new Map<string, Registration>();
+export class Cyrene<TRipples extends DependencyEntries = {}> {
+  #roots = new Map<string, Dependency>();
+
+  #overrides = new Map<Dependency, Dependency>();
 
   #identities = new Map<Dependency, string>();
 
@@ -96,80 +89,50 @@ export class Cyrene<
     return this.#view as ResolveEntries<TRipples>;
   }
 
-  add<const T extends DependencyEntries>(
-    entries: T & ValidRipples<T>,
-  ): Cyrene<TRipples & T, TImplementations & T>;
-  add<const K extends string, const D extends Dependency>(
-    key: K,
-    declaration: D,
-  ): Cyrene<TRipples & Record<K, D>, TImplementations & Record<K, D>>;
-
-  /** 同一对象原地注册并返回；链式调用累积 key 类型。失败不会污染原注册表。 */
-  add(entriesOrKey: DependencyEntries | string, declaration?: Dependency): unknown {
+  /** 显式入口原地累积；依赖在构图时自动收集，不暴露为属性。 */
+  use<const T extends readonly Dependency[]>(
+    ...declarations: T
+  ): Cyrene<TRipples & EntryDeclarations<T>>;
+  use(...declarations: Dependency[]): unknown {
     this.#assertConfiguring();
+    const incoming = new Map<string, Dependency>();
 
-    const incoming =
-      typeof entriesOrKey === 'string' ? { [entriesOrKey]: declaration } : entriesOrKey;
+    for (const declaration of declarations) {
+      assertDependency(declaration);
+      const existing = incoming.get(declaration.key) ?? this.#roots.get(declaration.key);
 
-    assertEntries(incoming);
-
-    const entries = Object.entries(incoming);
-    const identities = new Map<Dependency, string>();
-
-    // 整批检查通过后才写入，避免失败留下部分声明或身份索引。
-    for (const [key, original] of entries) {
-      if (this.#registrations.has(key)) {
-        throw new InvalidDependencyError(`Duplicate registration key: ${key}`);
+      if (existing && existing !== declaration) {
+        throw new InvalidDependencyError(`Duplicate Ripple key: ${declaration.key}`);
       }
 
-      assertDependency(original);
-      this.#assertIdentity(original, key);
-      const existing = identities.get(original);
-
-      if (existing !== undefined) {
-        throw new InvalidDependencyError(`Ripple registered more than once: ${existing}, ${key}`);
-      }
-
-      identities.set(original, key);
+      incoming.set(declaration.key, declaration);
     }
 
-    for (const [key, original] of entries) {
-      this.#registrations.set(key, { original, implementation: original });
-      this.#identities.set(original, key);
+    for (const [key, declaration] of incoming) {
+      if (this.#roots.has(key)) {
+        continue;
+      }
+
+      this.#roots.set(key, declaration);
       Object.defineProperty(this.#ripples, key, {
         enumerable: true,
-        get: () => this.resolve(key),
+        get: () => this.resolve(declaration),
       });
+      this.#registry = undefined;
     }
-
-    this.#registry = undefined;
 
     return this;
   }
 
-  /** 首次解析前更换配方；消费者中保存的原始 Ripple 引用仍定位原 key。 */
-  override<K extends string, const D extends Dependency>(
-    key: K,
-    replacement: D &
-      Dependency<
-        K extends keyof TRipples ? NoInfer<InferInput<TRipples[K]>> : unknown,
-        unknown,
-        K extends keyof TRipples ? NoInfer<DependencyAsync<TRipples[K]>> : boolean
-      >,
-  ): Cyrene<TRipples, ReplaceDependency<TImplementations, K, D>>;
-  override(key: string, replacement: Dependency): unknown {
+  /** 替换以原声明定位，保留原 key 与公开范围；构图时检查目标可达性。 */
+  override<D extends Dependency>(
+    target: D,
+    replacement: Dependency<NoInfer<InferInput<D>>, unknown, NoInfer<DependencyAsync<D>>>,
+  ): this {
     this.#assertConfiguring();
-    this.#require(key);
+    assertDependency(target);
     assertDependency(replacement);
-    this.#assertIdentity(replacement, key);
-    const registration = this.#registrations.get(key)!;
-
-    if (registration.implementation !== registration.original) {
-      this.#identities.delete(registration.implementation);
-    }
-
-    this.#registrations.set(key, { ...registration, implementation: replacement });
-    this.#identities.set(replacement, key);
+    this.#overrides.set(target, replacement);
     this.#registry = undefined;
 
     return this;
@@ -186,10 +149,9 @@ export class Cyrene<
 
     this.#state = 'active';
     Object.preventExtensions(this.#ripples);
+    this.#compile();
     const key = this.#resolveKey(target);
     this.#require(key);
-
-    this.#compile();
 
     return this.#resolve(key);
   }
@@ -198,7 +160,7 @@ export class Cyrene<
     const registry = this.#compile();
 
     return {
-      roots: [...registry.keys()],
+      roots: [...this.#roots.keys()],
       nodes: [...registry.keys()].map(key => ({
         key,
         state: this.#states.get(key) ?? 'registered',
@@ -233,21 +195,17 @@ export class Cyrene<
   }
 
   #compile(): Registry {
-    this.#registry ??= compileRegistry(this.#registrations);
+    if (!this.#registry) {
+      const compiled = compileRegistry(this.#roots.values(), this.#overrides);
+      this.#registry = compiled.registry;
+      this.#identities = compiled.identities;
+    }
 
     return this.#registry;
   }
 
-  #assertIdentity(target: Dependency, key: string): void {
-    const existing = this.#identities.get(target);
-
-    if (existing !== undefined && existing !== key) {
-      throw new InvalidDependencyError(`Ripple registered more than once: ${existing}, ${key}`);
-    }
-  }
-
   #require(key: string): void {
-    if (!this.#registrations.has(key)) {
+    if (!this.#registry!.has(key)) {
       throw new InvalidDependencyError(`Unknown registration key: ${key}`);
     }
   }
@@ -281,7 +239,7 @@ export class Cyrene<
       record = this.#newRecord(key, owner);
     }
 
-    if (!fresh && record.executing) {
+    if (!fresh && record.executing && (!owner || deferred)) {
       throw new CircularDependencyError(`Circular initialization: ${owner?.key ?? key} -> ${key}`);
     }
 
@@ -343,9 +301,17 @@ export class Cyrene<
   }
 
   #result(record: Resolution, owner?: Resolution): unknown {
+    // lazy 启动的消费者可以先等待执行中的父工厂，待其交付结果后再继续。
+    let value = record.value;
+
+    if (record.executing) {
+      record.resultDeferred = true;
+      value = Promise.resolve().then(() => this.#result(record));
+    }
+
     if (owner) {
-      if (isPromise(record.value)) {
-        void Promise.resolve(record.value).then(
+      if (isPromise(value)) {
+        void Promise.resolve(value).then(
           () => owner.waiting.delete(record),
           () => owner.waiting.delete(record),
         );
@@ -354,11 +320,11 @@ export class Cyrene<
       }
     }
 
-    if (record.state === 'failed' && !isPromise(record.value)) {
+    if (record.state === 'failed' && !isPromise(value)) {
       throw record.error;
     }
 
-    return record.value;
+    return value;
   }
 
   #create(record: Resolution): void {
@@ -382,7 +348,14 @@ export class Cyrene<
           () => this.#pending.delete(promise),
         );
       } else {
-        record.value = this.#complete(record, value);
+        const result = this.#complete(record, value);
+
+        // 同步环无法交付同步实例；已返回的资源仍须登记并在关闭时释放。
+        if (record.resultDeferred) {
+          throw new CircularDependencyError(`Circular synchronous initialization: ${record.key}`);
+        }
+
+        record.value = result;
       }
     } catch (cause) {
       this.#fail(record, cause);
@@ -529,7 +502,8 @@ export class Cyrene<
       this.#state = 'disposed';
       this.#cache.clear();
       this.#states.clear();
-      this.#registrations.clear();
+      this.#roots.clear();
+      this.#overrides.clear();
       this.#identities.clear();
       this.#registry = undefined;
     }

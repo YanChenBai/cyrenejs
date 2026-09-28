@@ -1,13 +1,13 @@
 import { Cyrene, formatGraph, ripple } from '../../src/index.ts';
 
 const write = (message: string) => process.stdout.write(`${message}\n`);
-const Config = ripple(() => ({ databaseUrl: 'memory://demo', prefix: 'app' }));
+const Config = ripple('config', () => ({ databaseUrl: 'memory://demo', prefix: 'app' }));
 
-const Logger = ripple({ config: Config }, ({ config }) => ({
+const Logger = ripple('logger', { config: Config }, ({ config }) => ({
   info: (message: string) => write(`[${config.prefix}] ${message}`),
 }));
 
-const Database = ripple({ config: Config, logger: Logger }, ({ config, logger }) => {
+const Database = ripple('database', { config: Config, logger: Logger }, ({ config, logger }) => {
   logger.info(`创建 Database: ${config.databaseUrl}`);
 
   return {
@@ -30,7 +30,7 @@ const Database = ripple({ config: Config, logger: Logger }, ({ config, logger })
   };
 });
 
-const Cache = ripple({ logger: Logger }, ({ logger }) => {
+const Cache = ripple('cache', { logger: Logger }, ({ logger }) => {
   const entries = new Map<string, string>();
   logger.info('创建 Cache');
 
@@ -58,6 +58,7 @@ const Cache = ripple({ logger: Logger }, ({ logger }) => {
 
 // Users 和 Catalog 共享 Database、Cache 与 Logger, 形成多条菱形依赖路径。
 const Users = ripple(
+  'users',
   { database: Database, cache: Cache, logger: Logger },
   ({ database, cache, logger }) => {
     logger.info('创建 Users');
@@ -77,6 +78,7 @@ const Users = ripple(
 );
 
 const Catalog = ripple(
+  'catalog',
   { database: Database, cache: Cache, logger: Logger },
   ({ database, cache, logger }) => {
     logger.info('创建 Catalog');
@@ -95,6 +97,7 @@ const Catalog = ripple(
 );
 
 const Orders = ripple(
+  'orders',
   { database: Database, users: Users, catalog: Catalog, logger: Logger },
   ({ database, users, catalog, logger }) => {
     logger.info('创建 Orders');
@@ -112,6 +115,7 @@ const Orders = ripple(
 );
 
 const Dashboard = ripple(
+  'dashboard',
   { users: Users, orders: Orders, logger: Logger },
   ({ users, orders, logger }) => {
     logger.info('创建 Dashboard');
@@ -129,19 +133,15 @@ const Dashboard = ripple(
 );
 
 export async function runBasic(): Promise<void> {
-  await using app = new Cyrene()
-    .add({ config: Config, logger: Logger, database: Database, cache: Cache })
-    .add({ users: Users, catalog: Catalog })
-    .add('orders', Orders)
-    .add('dashboard', Dashboard);
+  await using app = new Cyrene().use(Dashboard);
 
   app.override(
-    'config',
-    ripple(() => ({ databaseUrl: 'memory://configured', prefix: 'demo' })),
+    Config,
+    ripple('demoConfig', () => ({ databaseUrl: 'memory://configured', prefix: 'demo' })),
   );
 
   // 以业务入口为根展示多层关系, inspect 和 formatGraph 不会创建服务。
-  write(formatGraph({ ...app.inspect(), roots: ['dashboard'] }));
+  write(formatGraph(app.inspect()));
   const dashboard = app.ripples.dashboard;
   dashboard.render();
   write('再次渲染, 复用同一组服务与缓存:');

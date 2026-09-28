@@ -6,9 +6,9 @@ import { Cyrene, lazy, ripple } from '../../src/index.ts';
 export async function runAsync(): Promise<void> {
   let connections = 0;
   const events: string[] = [];
-  const Config = ripple(() => ({ name: 'demo' }));
+  const Config = ripple('config', () => ({ name: 'demo' }));
 
-  const Database = ripple(async () => {
+  const Database = ripple('database', async () => {
     connections++;
     await setTimeout(20);
 
@@ -21,7 +21,7 @@ export async function runAsync(): Promise<void> {
     };
   });
 
-  const Users = ripple({ database: Database }, ({ database }) => ({
+  const Users = ripple('users', { database: Database }, ({ database }) => ({
     list: () => database.users,
     [Symbol.dispose]() {
       events.push('users');
@@ -29,17 +29,12 @@ export async function runAsync(): Promise<void> {
   }));
 
   // Report 本身同步创建，只有 run() 才解析异步目标。
-  const Report = ripple({ users: lazy(() => Users) }, ({ users }) => ({
+  const Report = ripple('report', { users: lazy(() => Users) }, ({ users }) => ({
     run: async () => (await users.resolve()).list().join(', '),
   }));
 
   {
-    await using app = new Cyrene().add({
-      config: Config,
-      database: Database,
-      users: Users,
-      report: Report,
-    });
+    await using app = new Cyrene().use(Config, Users, Report);
     const report = app.ripples.report;
     assert.equal(Number(connections), 0);
     process.stdout.write(`${app.ripples.config.name}: Report 已创建, 数据库尚未连接\n`);

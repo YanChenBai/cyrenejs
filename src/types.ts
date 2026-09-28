@@ -9,11 +9,17 @@ export interface RippleOptions {
   ownership?: 'owned' | 'borrowed';
 }
 
-/** 无名称的创建声明；注册 key 由各个 Cyrene 实例决定。 */
-export interface Dependency<T = unknown, Inputs = unknown, Async extends boolean = boolean> {
+/** key 属于声明；实例与替换配置仍由各个容器独立管理。 */
+export interface Dependency<
+  T = unknown,
+  Inputs = unknown,
+  Async extends boolean = boolean,
+  Key extends string = string,
+> {
+  readonly key: Key;
   readonly [RIPPLE_BRAND]: {
     readonly result?: T;
-    /** 仅供编译期检查强依赖图，运行时配方仍保存在内部 WeakMap。 */
+    /** 保留输入类型，运行时配方存放在内部 WeakMap。 */
     readonly inputs?: Inputs;
     readonly async?: Async;
   };
@@ -29,7 +35,9 @@ export interface Lazy<T, Async extends boolean = boolean> {
 }
 
 export type DependencyEntries = Record<string, Dependency>;
-export type ValidRipples<T> = Record<Exclude<keyof T, string>, never>;
+export type EntryDeclarations<T extends readonly Dependency[]> = {
+  [D in T[number] as D['key']]: D;
+};
 
 export type InferInput<T> =
   T extends Dependency<infer R> ? R : T extends LazyRef<infer R, infer A> ? Lazy<R, A> : T;
@@ -63,14 +71,17 @@ type FactoryMode<T> = [T] extends [never]
         ? false
         : boolean;
 
+/** 逐个输入对象分支计算，保留全异步或同步/异步混合的返回契约。 */
 export type FactoryAsync<T, D = {}> =
   FactoryMode<T> extends true
     ? true
-    : 'async' extends InputAsync<D>
-      ? true
-      : 'maybe' extends InputAsync<D>
-        ? boolean
-        : FactoryMode<T>;
+    : D extends unknown
+      ? 'async' extends InputAsync<D>
+        ? true
+        : 'maybe' extends InputAsync<D>
+          ? boolean
+          : FactoryMode<T>
+      : never;
 
 export type ResolveEntries<T extends DependencyEntries> = {
   readonly [K in keyof T]: Resolved<T[K]>;
@@ -79,7 +90,7 @@ export type ResolveEntries<T extends DependencyEntries> = {
 export type NodeState = 'registered' | 'initializing' | 'ready' | 'failed';
 
 export interface GraphNode {
-  /** 注册 key，不是 Ripple 自身的标识。 */
+  /** 原声明的 key；替换实现不会改变它。 */
   key: string;
   state: NodeState;
 }

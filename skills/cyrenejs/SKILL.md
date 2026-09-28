@@ -1,33 +1,40 @@
 ---
 name: cyrenejs
-description: Build TypeScript service graphs with singleton and transient lifetimes, explicit registration, pre-resolution overrides, lazy resolution, and Symbol resource disposal.
+description: Build TypeScript service graphs with singleton and transient lifetimes, named entrypoints and automatic dependency collection, pre-resolution overrides, lazy resolution, and Symbol resource disposal.
 ---
 
 # Cyrene
 
-Use ripple(factory, options?) or ripple(deps, factory, options?). Ripple declarations have no IDs.
-Dependencies reference Ripple objects; ordinary inputs retain their values and types.
+Use ripple(key, factory, options?) or ripple(key, deps, factory, options?).
+Keys are immutable non-empty strings. Input property names are local factory parameters, not global keys.
+Dependencies reference Ripple objects; ordinary inputs and nested objects retain their values and types.
 
-Create new Cyrene() with no options. There is no start/init or startupFailure.
-Register every dependency with app.add({ key: Declaration }) or app.add('key', Declaration).
-Registration order is unrestricted, including across separate add calls.
-Each add checks declaration validity and duplicate keys or identities, without traversing dependencies.
-The first resolution validates the complete graph before any factory runs; missing dependencies and strong cycles are rejected.
+Create new Cyrene() with no options. Use app.use(Ripple) or app.use(First, Second), optionally chained.
+Only explicit use entries appear in app.ripples, both at runtime and in types.
+Strong dependencies and lazy targets are collected automatically on first resolution or inspect.
+Do not enumerate all children unless they should also be public entries.
+The same declaration is deduplicated by identity; repeated use is idempotent.
+Distinct declarations with the same key in the effective graph are rejected.
+use validates the entire entry batch before mutation; full graph checks are deferred to compilation.
+There is no add, object-map use, start/init, or startupFailure.
 
-add mutates and returns the same container. Chain calls or capture the returned container to accumulate
-key types and app.ripples.key completion. Standalone add calls cannot change the original variable's generic type; uncaptured keys
-have no ripples property completion; resolve(key) returns unknown. Compose registration entries with ordinary objects and object spreads.
-resolve(Ripple) infers the result directly from the declaration, even after standalone add calls.
-Original declarations and current replacements locate the same registration and use its current lifetime.
+use mutates and returns the same container. Chain calls or capture the result to accumulate public key types.
+Standalone use cannot change the original variable's generic type; resolve(key) returns unknown for keys
+not captured in that type. resolve(Ripple) infers directly from the declaration, including internal dependencies.
+Preserve inferred key literals; annotating Dependency without its fourth key generic erases precise entry keys.
 
-override(key, replacement) is synchronous and only allowed before the first ripples.key access or resolve.
-The original declaration still locates the registration after replacement. New dependencies may be added later but must be
-registered before the first resolution and replacement results must match the original type and sync/async contract when key types are known.
-Configuration locks immediately on activation, even if initialization fails.
-Dependency graph checks use runtime declaration identity, not structural TypeScript types.
-add/override allow temporarily incomplete or cyclic configurations; replacement result and sync/async
-contracts remain type-checked. Strong cycles are rejected before factories run; lazy waiting cycles
-are detected during initialization.
+Use override(original, replacement), referencing the original Ripple instead of a string.
+It preserves the original key and public visibility. The replacement key does not create a new slot or property.
+Consumers and lazy handles referencing the original resolve the replacement. Both original and current
+replacement declarations locate the slot; previous replacements no longer do.
+Replacement results must be compatible with the original and preserve its sync/async contract.
+Only the replacement's dependencies are collected; old dependencies survive only if another effective path needs them.
+Overrides may precede use; graph compilation rejects unreachable override targets, including ones pruned by a parent override.
+Repeated override on the same original uses the last replacement; override(original, original) restores the original.
+One replacement cannot occupy multiple slots or also be a separate entry/dependency node.
+Configuration locks on the first resolution attempt, even if graph compilation or initialization fails.
+Graph cycles are checked by runtime identity, not structural TypeScript types.
+Strong cycles are rejected before factories run; lazy waiting cycles are detected during initialization.
 
 app.ripples.key, resolve(key), and resolve(Ripple) initialize on demand. Synchronous factories with
 synchronous strong dependencies return real instances directly; an async factory or strong dependency
@@ -65,7 +72,8 @@ Factories clean resources allocated before they throw; the container only owns r
 Use await using or try/finally with await app.dispose(). No automatic failure disposal.
 Synchronous creation failures and entry errors throw; asynchronous creation failures reject.
 
-Use inspect and formatGraph for diagnostics; nodes contain only key and state.
+Use inspect and formatGraph for diagnostics: roots are explicit entries, nodes and edges cover the full effective graph.
+Nodes contain only the original key and state.
 State is the latest initialization state transition for that key, not an aggregate of concurrent transient instances.
 Graph validation runs on first resolution or explicit inspect. inspect does not lock configuration;
 configuration changes invalidate the cached graph. Lazy target callbacks run during graph construction. Validate with vp check, vp test run, vp pack,

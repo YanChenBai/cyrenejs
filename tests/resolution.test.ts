@@ -12,12 +12,12 @@ it('并发菱形依赖与 lazy 共用一次初始化，不误报等待环', asyn
     return {};
   });
 
-  const shared = ripple(factory);
-  const left = ripple({ shared }, deps => deps);
-  const right = ripple({ shared }, deps => deps);
-  const root = ripple({ left, right }, deps => deps);
-  const deferredRoot = ripple({ shared: lazy(() => shared) }, deps => deps);
-  const app = new Cyrene().add({ shared, left, right, root, deferredRoot });
+  const shared = ripple('shared', factory);
+  const left = ripple('left', { shared }, deps => deps);
+  const right = ripple('right', { shared }, deps => deps);
+  const root = ripple('root', { left, right }, deps => deps);
+  const deferredRoot = ripple('deferredRoot', { shared: lazy(() => shared) }, deps => deps);
+  const app = new Cyrene().use(shared, left, right, root, deferredRoot);
   const handle = app.ripples.deferredRoot.shared;
   const first = app.ripples.root;
   const pending = app.ripples.shared;
@@ -48,22 +48,22 @@ it('多个异步强依赖在任何分支完成前都开始初始化', async () =
   const secondGate = deferred<void>();
   const entered: string[] = [];
 
-  const first = ripple(async () => {
+  const first = ripple('first', async () => {
     entered.push('first');
     await firstGate.promise;
 
     return 1;
   });
 
-  const second = ripple(async () => {
+  const second = ripple('second', async () => {
     entered.push('second');
     await secondGate.promise;
 
     return 2;
   });
 
-  const root = ripple({ first, second }, deps => deps.first + deps.second);
-  const app = new Cyrene().add({ first, second, root });
+  const root = ripple('root', { first, second }, deps => deps.first + deps.second);
+  const app = new Cyrene().use(first, second, root);
   const pending = app.ripples.root;
   expect(entered).toEqual(['first', 'second']);
   secondGate.resolve();
@@ -83,11 +83,11 @@ it('按需解析共享 Promise，独立分支并行且共享单例', async () =>
     return {};
   });
 
-  const shared = ripple(factory);
+  const shared = ripple('shared', factory);
   const siblingFactory = vi.fn(() => ({}));
-  const sibling = ripple(siblingFactory);
-  const root = ripple({ shared, sibling }, deps => deps);
-  const app = new Cyrene().add({ shared, sibling, root });
+  const sibling = ripple('sibling', siblingFactory);
+  const root = ripple('root', { shared, sibling }, deps => deps);
+  const app = new Cyrene().use(shared, sibling, root);
   const first = app.ripples.root;
   expect(app.resolve('root')).toBe(first);
   await entered.promise;
@@ -104,18 +104,18 @@ it('强依赖失败等待慢分支，资源保留到显式关闭', async () => {
   const gate = deferred<void>();
   const cleanup = vi.fn();
 
-  const slow = ripple(async () => {
+  const slow = ripple('slow', async () => {
     await gate.promise;
 
     return { [Symbol.dispose]: cleanup };
   });
 
-  const fail = ripple(() => {
+  const fail = ripple('fail', () => {
     throw new Error('boom');
   });
 
-  const root = ripple({ fail, slow }, deps => deps);
-  const app = new Cyrene().add({ fail, slow, root });
+  const root = ripple('root', { fail, slow }, deps => deps);
+  const app = new Cyrene().use(fail, slow, root);
   const rejected = expect(app.ripples.root).rejects.toThrow('Failed to resolve');
   expect(cleanup).not.toHaveBeenCalled();
   gate.resolve();
@@ -130,14 +130,14 @@ it('dispose 等待已接收的初始化，立即拒绝新入口', async () => {
   const gate = deferred<void>();
   const cleanup = vi.fn();
 
-  const service = ripple(async () => {
+  const service = ripple('service', async () => {
     entered.resolve();
     await gate.promise;
 
     return { [Symbol.dispose]: cleanup };
   });
 
-  const app = new Cyrene().add('service', service);
+  const app = new Cyrene().use(service);
   const pending = app.resolve('service');
   await entered.promise;
   const closing = app.dispose();
@@ -154,7 +154,7 @@ it('失败单例缓存失败结果，不自动重复执行工厂', async () => {
     throw new Error('failed');
   });
 
-  const app = new Cyrene().add('broken', ripple(factory));
+  const app = new Cyrene().use(ripple('broken', factory));
   expect(() => app.resolve('broken')).toThrow();
   expect(() => app.resolve('broken')).toThrow();
   expect(factory).toHaveBeenCalledOnce();
@@ -166,14 +166,14 @@ it('关闭等待已接收工厂在 await 之后继续解析 lazy 依赖', async 
   const gate = deferred<void>();
   const events: string[] = [];
 
-  const child = ripple(() => ({
+  const child = ripple('child', () => ({
     read: () => 42,
     [Symbol.dispose]() {
       events.push('child');
     },
   }));
 
-  const parent = ripple({ child: lazy(() => child) }, async ({ child }) => {
+  const parent = ripple('parent', { child: lazy(() => child) }, async ({ child }) => {
     entered.resolve();
     await gate.promise;
     const value = child.resolve();
@@ -186,7 +186,7 @@ it('关闭等待已接收工厂在 await 之后继续解析 lazy 依赖', async 
     };
   });
 
-  const app = new Cyrene().add({ child, parent });
+  const app = new Cyrene().use(child, parent);
   const pending = app.resolve('parent');
   await entered.promise;
   const closing = app.dispose();

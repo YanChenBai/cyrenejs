@@ -13,14 +13,14 @@ export async function runRegistration(): Promise<void> {
   };
 
   try {
-    const Config = ripple(() => ({ label: 'configured' }));
-    const External = ripple(() => external, { ownership: 'borrowed' });
-    const Service = ripple({ config: Config, external: External }, deps => deps);
+    const Config = ripple('config', () => ({ label: 'configured' }));
+    const External = ripple('external', () => external, { ownership: 'borrowed' });
+    const Service = ripple('service', { config: Config, external: External }, deps => deps);
     await using app = new Cyrene();
 
-    app.add({ config: Config, external: External });
+    app.use(Config, External);
     // 接住返回值才会给新变量增加 service 的属性类型提示。
-    const registered = app.add('service', Service);
+    const registered = app.use(Service);
     const byDeclaration = app.resolve(Service);
     const byKey = app.resolve('service'); // unknown, 原 app 的泛型未改变
     assert.equal(registered.ripples.service, byDeclaration);

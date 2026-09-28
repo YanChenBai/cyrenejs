@@ -4,22 +4,29 @@ import { RIPPLE_BRAND } from './symbols.ts';
 import type { Dependency, FactoryAsync, ResolveInputs, RippleOptions } from './types.ts';
 import { isFunction } from './utils.ts';
 
-export function ripple<T>(
+export function ripple<const K extends string, T>(
+  key: K,
   factory: () => T,
   options?: RippleOptions,
-): Dependency<Awaited<T>, {}, FactoryAsync<T>>;
-export function ripple<const D extends Record<PropertyKey, unknown>, T>(
+): Dependency<Awaited<T>, {}, FactoryAsync<T>, K>;
+export function ripple<const K extends string, const D extends Record<PropertyKey, unknown>, T>(
+  key: K,
   deps: D,
   factory: (deps: ResolveInputs<D>) => T,
   options?: RippleOptions,
-): Dependency<Awaited<T>, D, FactoryAsync<T, D>>;
+): Dependency<Awaited<T>, D, FactoryAsync<T, D>, K>;
 
-/** 工厂只保存创建规则，声明不绑定任何容器的名称或实例。 */
+/** 声明保存 key 与创建规则，不绑定任何容器或实例。 */
 export function ripple(
+  key: string,
   depsOrFactory: Record<PropertyKey, unknown> | (() => unknown),
   factoryOrOptions?: ((deps: never) => unknown) | RippleOptions,
   configuration?: RippleOptions,
 ): Dependency {
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new InvalidDependencyError('Ripple key must be a non-empty string');
+  }
+
   let inputs: Record<PropertyKey, unknown> = {};
   let factory: unknown = depsOrFactory;
   let options = factoryOrOptions as RippleOptions | undefined;
@@ -35,7 +42,7 @@ export function ripple(
   }
 
   validateOptions(options ?? {});
-  const declaration = Object.freeze({ [RIPPLE_BRAND]: Object.freeze({}) });
+  const declaration = Object.freeze({ key, [RIPPLE_BRAND]: Object.freeze({}) });
 
   let invoke = (values: Record<PropertyKey, unknown>): unknown =>
     Reflect.apply(factory, undefined, [values]);

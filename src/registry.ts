@@ -4,77 +4,90 @@ import { getLazyTarget, isLazy } from './lazy.ts';
 import type { Dependency, GraphEdge } from './types.ts';
 import { inputEntries } from './utils.ts';
 
-export interface Registration {
+export interface CompiledRegistration {
   original: Dependency;
   implementation: Dependency;
-}
-
-export interface CompiledRegistration extends Registration {
   dependencies: Map<PropertyKey, GraphEdge>;
 }
 
 export type Registry = Map<string, CompiledRegistration>;
 
-/** 原始声明和当前替身都定位同一个 key，让消费者无需改写依赖。 */
-export function compileRegistry(registrations: ReadonlyMap<string, Registration>): Registry {
-  const identities = new Map<Dependency, string>();
+/** 先收集有效实现的闭包，再检查强依赖环；只发布完整且合法的快照。 */
+export function compileRegistry(
+  roots: Iterable<Dependency>,
+  overrides: ReadonlyMap<Dependency, Dependency>,
+): { registry: Registry; identities: Map<Dependency, string> } {
   const registry: Registry = new Map();
+  const identities = new Map<Dependency, string>();
+  const reachable = new Set<Dependency>();
 
-  for (const [key, { original, implementation }] of registrations) {
+  const visit = (original: Dependency): string => {
+    assertDependency(original);
+    const key = original.key;
+    const existing = registry.get(key);
+
+    if (existing) {
+      if (existing.original !== original) {
+        throw new InvalidDependencyError(`Duplicate Ripple key: ${key}`);
+      }
+
+      return key;
+    }
+
+    const implementation = overrides.get(original) ?? original;
+
+    const registration: CompiledRegistration = {
+      original,
+      implementation,
+      dependencies: new Map(),
+    };
+
+    registry.set(key, registration);
+    reachable.add(original);
     registerIdentity(identities, original, key);
     registerIdentity(identities, implementation, key);
-    // 新邻接只写入副本，校验失败不能影响已发布注册表。
-    registry.set(key, { original, implementation, dependencies: new Map() });
+
+    for (const [input, value] of inputEntries(getDefinition(implementation).inputs)) {
+      const deferred = isLazy(value);
+      const target = deferred ? getLazyTarget(value) : value;
+
+      if (isDependency(target)) {
+        registration.dependencies.set(input, {
+          from: key,
+          to: visit(target),
+          input,
+          kind: deferred ? 'lazy' : 'dependency',
+        });
+      }
+    }
+
+    return key;
+  };
+
+  for (const root of roots) {
+    visit(root);
   }
 
-  for (const [key, registration] of registry) {
-    connectDependencies(identities, key, registration);
+  for (const target of overrides.keys()) {
+    if (!reachable.has(target)) {
+      throw new InvalidDependencyError(`Override target is not reachable: ${target.key}`);
+    }
   }
 
   validateRegistry(registry);
 
-  return registry;
+  return { registry, identities };
 }
 
+/** 一个声明不能同时代表两个槽位，替身也遵循这个约束。 */
 function registerIdentity(identities: Map<Dependency, string>, target: Dependency, key: string) {
-  assertDependency(target);
   const existing = identities.get(target);
 
   if (existing !== undefined && existing !== key) {
-    throw new InvalidDependencyError(`Ripple registered more than once: ${existing}, ${key}`);
+    throw new InvalidDependencyError(`Ripple occupies multiple keys: ${existing}, ${key}`);
   }
 
   identities.set(target, key);
-}
-
-function connectDependencies(
-  identities: Map<Dependency, string>,
-  key: string,
-  registration: CompiledRegistration,
-): void {
-  const definition = getDefinition(registration.implementation);
-
-  for (const [input, value] of inputEntries(definition.inputs)) {
-    const deferred = isLazy(value);
-    const target = deferred ? getLazyTarget(value) : value;
-
-    if (!isDependency(target)) {
-      continue;
-    }
-
-    const dependencyKey = identities.get(target);
-
-    if (dependencyKey === undefined) {
-      throw new InvalidDependencyError(`Unregistered dependency: ${key}.${String(input)}`);
-    }
-
-    registration.dependencies.set(input, {
-      from: key,
-      to: dependencyKey,
-      input,
-      kind: deferred ? 'lazy' : 'dependency',
-    });
-  }
 }
 
 /** 构图只检查强依赖环；lazy 的真实等待环在解析时检查。 */

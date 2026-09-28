@@ -23,7 +23,7 @@ export function isLazy(value: unknown): value is LazyRef {
 
 /** 在构建声明闭包时取得真实目标；回调返回非声明时立即报错。 */
 export function getLazyTarget(reference: LazyRef): Dependency {
-  // 注册闭包时求值并验证，随后将结果写入节点邻接元数据。
+  // 收集依赖闭包时求值并验证，随后将结果写入节点邻接元数据。
   // 因而 lazy 是延迟“实例初始化”，并不是延迟整个声明的合法性校验。
   const target = targets.get(reference)?.();
   assertDependency(target);

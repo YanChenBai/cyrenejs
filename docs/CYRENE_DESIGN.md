@@ -1,213 +1,214 @@
-# Cyrene 设计架构
+# Cyrene 固定依赖图设计
 
-Cyrene 是面向 TypeScript 的声明式依赖图 Runtime。一个 Cyrene 就是一个独立运行作用域：构造时声明入口与外部能力，之后启动、按需解析、释放。依赖显式、类型安全、支持异步初始化，不依赖装饰器、反射或框架。
+**配置阶段确定依赖图, 解析阶段按需创建真实实例, 关闭阶段统一清理资源。**
 
-## 1. 最终 API
+[模型](#模型) · [配置阶段](#配置阶段) · [解析](#解析) · [关闭](#关闭) · [诊断与类型边界](#诊断与类型边界)
 
-```ts
-const Config = token<{ databaseUrl: string }>('Config');
-const logger = ripple({}, (_dependencies, options: { scope: string }) => new Logger(options.scope));
-const database = ripple(
-  { config: Config, logger: logger({ scope: 'database' }) },
-  async ({ config, logger }) => {
-    const database = new Database(config.databaseUrl, logger);
-    await database.connect();
-    return database;
-  },
-  { dispose: database => database.close(), debugName: 'Database' },
-);
-const users = ripple(
-  { database, logger: logger({ scope: 'users' }) },
-  ({ database, logger }) => new UserService(database, logger),
-);
-const app = new Cyrene({
-  ripples: { database, users },
-  bindings: [{ token: Config, value: { databaseUrl: 'postgres://localhost/app' } }],
-});
-const services = await app.start();
-// services.database: Database; services.users: UserService
-await app.dispose();
+## 模型
+
+```mermaid
+flowchart LR
+  Declaration["Ripple 声明"] --> Configuration["use / override"]
+  Configuration --> Registry["编译有效依赖图"]
+  Registry --> Resolution["按需解析实例"]
+  Resolution --> Resources["登记所有权与待清理资源"]
+  Resources --> Disposal["dispose 逆序清理"]
 ```
 
-| API                               | 职责                                   |
-| --------------------------------- | -------------------------------------- |
-| ripple(inputs, factory, options?) | 返回可调用的依赖定义                   |
-| defineRipples(ripples)            | 约束并标记命名入口集合                 |
-| isRipple(value)                   | 判断是否带有 Ripple 定义标识           |
-| isRipples(value)                  | 判断是否带有入口集合标识               |
-| dependency(...params)             | 记录参数，创建新的 DependencyRef       |
-| token<T>(name)                    | 声明外部能力身份                       |
-| lazy(() => target)                | 声明延迟依赖边                         |
-| new Cyrene({ ripples, bindings }) | 创建独立作用域，快照保存入口和绑定     |
-| cyrene.start()                    | 校验并初始化全部命名入口，返回对应实例 |
-| cyrene.resolve(target)            | 按需解析单个目标                       |
-| cyrene.validate(target?)          | 校验单个目标或全部入口，不执行 factory |
-| cyrene.inspect(target?)           | 返回单个目标或全部入口的依赖图         |
-| cyrene.dispose()                  | 释放持有的资源                         |
+| 对象          | 保存什么                             | 何时使用                     |
+| ------------- | ------------------------------------ | ---------------------------- |
+| Ripple        | 不可变 key、输入与工厂配方           | 声明服务与引用依赖           |
+| Registry      | 原声明、当前实现与依赖边             | 构图校验与解析定位           |
+| Resolution    | 一次初始化的状态、值、错误与等待关系 | 缓存单例或追踪独立 transient |
+| ResourceStore | 弱引用所有权与有序待清理资源         | 去重、冲突检查与关闭         |
 
-不提供 bind()、add()、createScope()、CyreneScope 或 scoped lifetime，不保留兼容接口。
+每个容器独立持有这些运行时数据。工厂收到真实依赖实例, 依赖图在首次解析时锁定。
 
-## 2. Dependency 与参数
+### 模块职责
 
-ripple 统一使用依赖映射、factory、可选配置，没有依赖时显式传 {}。factory 的第一个参数由 Cyrene 注入，后续参数由调用者提供。泛型元组推导参数，具体 factory 声明实际参数，不统一写 ...args: any[]。异步结果由 Awaited 解包。
+| 模块                          | 职责                         |
+| ----------------------------- | ---------------------------- |
+| `ripple` / `dependency`       | 声明重载、工厂配方与身份     |
+| `registry`                    | 依赖收集、覆盖应用与图校验   |
+| `cyrene`                      | 配置、解析、等待环检测与关闭 |
+| `resources`                   | 所有权登记与资源清理         |
+| `lazy`                        | 延迟依赖声明                 |
+| `types` / `utils` / `symbols` | 类型契约、输入处理与声明标记 |
+| `format-graph`                | 诊断快照格式化与终端字符清理 |
 
-```ts
-const client = ripple(
-  { config: Config },
-  ({ config }, name: string, timeout: number, retry = 3) =>
-    new Client(config, name, timeout, retry),
-);
-const github = client('github', 5000);
+## 配置阶段
+
+### 注册与编译
+
+1. `new Cyrene()` 创建空容器; `use(...declarations)` 整批验证并登记公开入口。
+2. 首次 `resolve()` 或显式 `inspect()` 时, 从入口收集有效实现的强依赖与 lazy 目标。
+3. 校验声明身份、key 冲突、覆盖目标可达性与强依赖环。
+4. 成功后缓存完整 Registry; 配置变更使缓存失效, 失败不缓存半成品。
+
+| 规则                     | 结果                                    |
+| ------------------------ | --------------------------------------- |
+| 同一声明重复 `use()`     | 幂等, 返回同一容器                      |
+| 不同原声明使用相同 key   | 报错                                    |
+| 仅作为依赖被收集         | 可通过 `resolve()` 访问, 不增加公开属性 |
+| 内部依赖后来显式 `use()` | 提升为公开入口                          |
+| 普通输入或嵌套对象       | 原样传递, 不递归收集                    |
+
+lazy 回调在构图时求值, 必须稳定且无副作用; 配置不变时复用编译结果。
+
+### 覆盖与锁定
+
+`override(original, replacement)` 以原声明定位, 使用替身的工厂、依赖和 lifetime。
+
+- 保留原 key 与公开范围, 替身须兼容原返回值和同步 / 异步契约。
+- 只收集有效实现的依赖, 原实现独有的依赖被裁剪。
+- 允许先覆盖后注册; 同一目标最后一次覆盖生效, 覆盖回原声明可恢复原实现。
+- 原声明与当前替身都映射到原 key; 旧替身不再保留映射。
+
+**配置锁定于第一次解析尝试**, 即使构图或初始化失败也不解锁。`inspect()` 不锁定配置。
+
+<details>
+<summary>覆盖校验的边界</summary>
+
+- 覆盖目标必须是有效图中可达的原声明; 被上层覆盖裁剪掉的目标同样报错。
+- 一个声明只能对应一个注册 key; 同一替身不能同时服务多个覆盖或独立节点。
+- 图校验基于运行时声明身份, 不根据 TypeScript 结构相似性判断环。
+- 激活后不可继续 `use()` 或 `override()`; 需要另一套图时创建新容器。
+
+</details>
+
+## 解析
+
+### 创建流程
+
+```mermaid
+flowchart TD
+  Entry["读取 ripples.key / resolve"] --> Cache{"已有 singleton 记录?"}
+  Cache -->|是| Result["返回缓存值 / Promise, 或抛出同步错误"]
+  Cache -->|否| Record["创建独立 Resolution"]
+  Record --> Dependencies["解析强依赖, 注入 lazy 句柄"]
+  Dependencies --> Factory["强依赖就绪后执行工厂"]
+  Factory --> Ownership["登记返回值的所有权"]
+  Ownership --> Ready["完成初始化并交付结果"]
 ```
 
-所有 Dependency 在运行时和类型层均可调用。调用只创建 Ref，不执行 factory。无参数定义可以直接引用，也可调用创建独立 Ref：
+属性入口是只读访问器视图, 服务实例本身不代理。声明解析只查找已注册图中的身份, 不自动注册未知声明。
 
-```ts
-await app.resolve(database);
-const separateDatabase = database();
-await app.resolve(separateDatabase);
-```
+### 生命周期与结果
 
-带参数定义必须先调用生成 Ref，不能作为裸入口、裸依赖或解析目标。只有可选参数或 rest 参数的定义也显式调用。TypeScript 校验参数；运行时不使用 factory.length 猜测被擦除的参数类型，JavaScript 使用者遵守相同约定。
+| 行为       | singleton (默认)       | transient                    |
+| ---------- | ---------------------- | ---------------------------- |
+| 初始化记录 | 执行工厂前写入缓存     | 每次解析独立创建             |
+| 同步结果   | 缓存实例               | 每次重新执行工厂             |
+| 异步结果   | 始终返回同一个 Promise | 独立 Promise, 不合并并发请求 |
+| 创建失败   | 缓存失败               | 下次解析重新尝试             |
+| 注入消费者 | 复用同一单例           | 每个输入属性独立解析         |
 
-## 3. Identity 与输入
+- singleton 消费者只在首次初始化时创建并持有其 transient 依赖。
+- 工厂和全部强依赖同步时直接返回实例, 否则返回 Promise。
+- 强依赖并行初始化; 某分支失败时仍等待同批所有分支结束, 避免遗漏晚到资源。
+- 普通 Promise 输入原样传递; lazy 目标的异步性只影响句柄解析结果。
+- 同步失败直接抛错, 异步失败拒绝 Promise; 已登记资源等待调用方关闭容器。
 
-直接引用无参数 Dependency 时以定义对象为 identity；Ref 以 Ref 对象为 identity，包括无参数 Ref。每次调用创建新 identity，不做参数深比较、哈希或自动合并。共享缓存实例必须复用同一引用。Token 查找绑定后沿用绑定目标的缓存策略。
+### lazy 与等待环
 
-输入支持 Dependency、Ref、Token、LazyRef 及普通对象、函数、class 和值。只解析映射顶层带内部 brand 的值；普通对象不递归解析，普通函数不自动执行。factory 返回函数也作为普通实例值。
+lazy 注入绑定当前容器的解析句柄。**启动异步初始化与等待结果是两个时机。**
 
-依赖映射和配置浅拷贝后保存为只读 metadata。参数元组快照保存，但普通对象值和参数对象不深拷贝。
+| 操作                          | 等待关系                           |
+| ----------------------------- | ---------------------------------- |
+| 仅调用 `lazy.resolve()`       | 不登记                             |
+| `await` 或返回给异步工厂      | 登记                               |
+| `then` / `catch` / `finally`  | 登记, 包括旁路观察回调             |
+| 目标完成, 或消费者成功 / 失败 | 清除对应等待边或消费者的全部等待边 |
 
-## 4. ripples 与 bindings
+等待边连接具体 `Resolution`, 互不关联的 transient 实例不会被合并。
 
-ripples 是命名入口映射，每个值必须是可解析目标：无参数 Dependency、DependencyRef 或 Token。start 初始化所有入口及其非 lazy 可达依赖，返回值保留入口名称并推导实例类型。入口名不参与 identity。
+<details>
+<summary>重入、递归与 Promise 身份</summary>
 
-入口使用自身可枚举的字符串键。类型层拒绝数字键和 Symbol 键；JavaScript 数字属性在运行时已转换为字符串，按字符串入口处理。运行时拒绝 Symbol 键与自身不可枚举入口，内部集合标识除外，避免静默忽略声明。依赖 inputs 仍支持 Symbol 键。
+- 同步执行栈拦截公共解析重入; 尚在初始化的创建链不能递归展开同一声明。
+- transient 就绪后的 lazy 句柄可以再次创建同声明的新实例。
+- lazy 启动的子服务可等待仍在执行的异步父工厂; 父工厂真正等待子服务时会检测出环。
+- 同步父工厂无法通过延迟 Promise 交付同步实例, 此类同步环会被拒绝; 已返回资源仍登记清理。
+- 初始化期间, 同一句柄按目标 Resolution 复用 `LazyPromise` 包装, 身份与公共入口不同。
+- 消费者就绪后直接返回解析结果: singleton 复用缓存, transient 重新创建。
+- 读取失败的异步记录仍返回原拒绝 Promise, 读取同步失败记录直接抛错。
+- 等待关系仅用于初始化检测, 不参与资源清理排序。
 
-defineRipples 在原对象上添加不可枚举、不可修改、不可删除的内部标识，返回原对象并保留类型推导。它校验入口形状及目标身份，不校验尚未绑定的依赖图，也不冻结集合。首次标记需要可扩展对象；已经标记的集合可以重复传入。组合使用对象展开后重新调用 defineRipples；标识本身不随展开复制。普通入口对象仍可直接传给 Cyrene。
+</details>
 
-defineRipples 不是模块系统，不引入 imports、exports、注册顺序或独立生命周期。内部 RIPPLE_SYMBOL 与 RIPPLES_SYMBOL 不从包入口导出；isRipple 与 isRipples 只判断自身标识严格等于 true，不表示目标可由当前运行时解析。
+## 关闭
 
-v0 要求依赖定义、Ref、Token、LazyRef 与 Cyrene 共享同一份运行时模块。Symbol.for 标识可以跨副本识别，但 metadata 不跨副本共享；跨副本解析不受支持。插件应复用宿主的 cyrenejs 依赖。
+### 容器状态
 
-bindings 专门提供 Token 的外部实现：
+| 状态          | 可执行操作                         |
+| ------------- | ---------------------------------- |
+| `configuring` | 注册、覆盖、检查图、开始解析或关闭 |
+| `active`      | 按需解析、检查图或关闭             |
+| `disposing`   | 仅已接收的初始化可继续解析依赖     |
+| `disposed`    | 重复关闭返回同一个 Promise         |
 
-```ts
-type Binding<T = unknown> =
-  | { token: Token<T>; value: T; dependency?: never }
-  | { token: Token<T>; dependency: Resolvable<T>; value?: never };
-```
+`dispose()` 立即进入 `disposing`, 保存唯一关闭 Promise, 然后等待初始化并清理资源。
+正在初始化的工厂可继续完成强依赖和 lazy 解析; 已就绪服务的 lazy 句柄停止接收新工作。
 
-绑定必须且只能包含 value 或 dependency。同一 Token 重复绑定拒绝，名称相同但 identity 不同的 Token 是不同能力。value: undefined 合法，按属性存在性区分。
+### 所有权与保留
 
-复杂构造统一使用 ripple。未被入口引用的 dependency binding 不主动初始化。函数 value 不执行，所有外部 value 不自动 dispose。
+| 实例                                     | 记录方式                        | 清理责任             |
+| ---------------------------------------- | ------------------------------- | -------------------- |
+| owned + 工厂返回时已声明 Symbol 清理协议 | 有序强引用列表 + WeakMap 所有权 | 容器关闭时清理       |
+| 普通对象                                 | WeakMap 所有权                  | 无 Symbol 清理行为   |
+| borrowed                                 | WeakMap 所有权                  | 应用管理             |
+| singleton 结果                           | 额外保存在解析缓存              | 不改变上述所有权规则 |
 
-构造函数推导 bindings 元组，逐项校验 Token 与 value/dependency 的实例类型。单独声明绑定时也可以使用 satisfies Binding<Config>。如果使用方提前把列表擦除为 Binding[]，关联类型信息就会丢失；运行时无法恢复被擦除的 TypeScript 类型。
+- 同一对象只登记一次, 重复返回不改变首次完成位置。
+- 同一对象混用 owned / borrowed 会报错, 保留原清理责任。
+- 清理协议 getter 在关闭时求值; `Symbol.asyncDispose` 优先于 `Symbol.dispose`。
+- 普通 `.dispose()` 与选项式 disposer 不参与清理协议。
 
-构造时浅拷贝并冻结入口映射及绑定声明；原始映射或绑定列表的后续修改无效，普通对象值保留引用。构造不执行 factory，不支持后续添加入口。
+### 清理顺序与责任
 
-## 5. 独立运行作用域
+1. 等待所有已接收的初始化结束, 包括期间新增的依赖初始化。
+2. 按资源首次成功登记的逆序逐个等待清理。
+3. 某项失败后继续清理其余资源, 最后聚合报告错误。
+4. 清空运行时缓存和资源记录, 状态进入 `disposed`。
 
-```ts
-interface CyreneOptions<
-  TRipples extends DependencyEntries = {},
-  TBindings extends readonly Binding[] = readonly Binding[],
-> {
-  ripples?: TRipples & ValidRipples<TRipples>;
-  bindings?: TBindings & ValidBindings<TBindings>;
-}
-class Cyrene<
-  TRipples extends DependencyEntries = {},
-  const TBindings extends readonly Binding[] = readonly Binding[],
-> {
-  constructor(options?: CyreneOptions<TRipples, TBindings>);
-  start(): Promise<ResolveEntries<TRipples>>;
-  resolve<T>(target: Resolvable<T>): Promise<T>;
-  validate(target?: Resolvable<unknown>): void;
-  inspect(target?: Resolvable<unknown>): DependencyGraph;
-  dispose(): Promise<void>;
-  [Symbol.asyncDispose](): Promise<void>;
-}
-```
+**应用先停止并等待业务任务, 再关闭容器。** 容器只追踪初始化, 不追踪业务方法、流或后台任务。
 
-没有 ripples 时 start 返回空对象。需要独立生命周期，就创建另一个 Cyrene；没有父子查找、继承或递归启动。共享实例显式通过 Token value 传入：
+<details>
+<summary>资源边界</summary>
 
-```ts
-const task = new Cyrene({
-  ripples: { job },
-  bindings: [{ token: Database, value: services.database }],
-});
-await task.start();
-await task.dispose();
-await app.dispose();
-```
+- 强依赖先完成, 消费者通常先清理; 真实依赖引用不会提前失效。
+- 后来激活的 lazy 依赖和对象别名不额外按拓扑排序。
+- owned transient 待清理资源保留到容器关闭, 不提供每次调用后的自动释放或请求作用域。
+- 普通 transient 和 borrowed 实例不会被资源表强引用, 无其他引用时可被回收。
+- 工厂抛错前分配但尚未返回的资源, 由工厂自行清理。
 
-消费者先结束，再释放共享资源的原持有者。支持 await using，不依赖隐式全局上下文。
+</details>
 
-## 6. start 与 resolve
+## 诊断与类型边界
 
-start 首次调用记录唯一 Promise；收集构造时声明的全部入口，统一校验可达图，然后先依赖后消费者初始化，独立分支可并行。等待所有入口分支结束后返回命名实例；多个错误由 AggregateError 汇总。
+### 诊断
 
-启动不扫描其他定义或其他 Cyrene，lazy 目标不提前初始化。并发及后续 start 返回同一个 Promise，包括成功和失败，不重复创建 transient 入口。失败时等待已开始的分支结束，成功创建的资源仍由 Cyrene 持有直到 dispose。
+| 字段 / 输出       | 语义                                                |
+| ----------------- | --------------------------------------------------- |
+| `roots`           | 显式入口                                            |
+| `nodes` / `edges` | 完整有效图                                          |
+| 节点 `state`      | 该 key 最近一次初始化状态变化, 不聚合并发 transient |
+| `formatGraph()`   | 显示原声明 key, 共享和循环节点显示引用标记          |
 
-resolve 在启动前后均可使用，不增加入口。先校验目标图，再解析，与 start 共用缓存和并发去重。singleton 的初始化 Promise 先缓存再运行 factory，成功缓存结果，失败删除状态，后续 resolve 可以重试，但不重置 start 的失败结果。
+`inspect()` 返回独立快照, 不执行工厂。格式化时换行和制表符变为空格, ANSI 序列与其余终端控制字符被清除; 原始快照不变。
 
-## 7. Lifetime
+### 类型
 
-```ts
-type Lifetime = 'singleton' | 'transient';
-```
+| API / 类型               | 推导与约束                                |
+| ------------------------ | ----------------------------------------- |
+| `ripple()`               | key 字面量、输入、工厂结果与同步 / 异步性 |
+| `Dependency<T, D, A, K>` | 结果、输入声明、异步标记、key             |
+| 链式 `use()`             | 仅累积显式入口的 key                      |
+| `override()`             | 通过 `NoInfer` 从原声明约束替身           |
+| `resolve(Ripple)`        | 从声明推导实例类型                        |
+| `resolve(key)`           | 已累积的 key 有精确类型, 其余为 `unknown` |
 
-默认 singleton：每个 Cyrene 内按 identity 缓存，不是进程全局。不同 Cyrene 始终隔离。
-
-transient：每次解析创建，由当前 Cyrene 持有。被 singleton 引用的 transient 随消费者存活，不额外禁止这种捕获。重复 start 复用自身结果，显式 resolve transient 仍每次创建。
-
-scoped 与单个 Cyrene 内的 singleton 重合，因此删除。
-
-## 8. Lazy 与循环
-
-```ts
-const a = ripple({ b: lazy(() => b) }, ({ b }): A => new A(b));
-const b = ripple({ a }, ({ a }): B => new B(a));
-interface Lazy<T> {
-  resolve(): Promise<T>;
-}
-```
-
-强依赖环在 factory 执行前抛 CircularDependencyError。lazy 边不参与强初始化环，也不提前实例化目标。validate/inspect 可以求值 lazy 的声明 thunk，但不运行 factory；thunk 必须无副作用且返回稳定目标。lazy 可达图仍校验缺失绑定、非法目标和纯强依赖环。
-
-注入的 Lazy 绑定当前 Cyrene。显式 Lazy.resolve 才解析目标并记录实际资源依赖边。factory 在初始化期间主动等待 lazy 目标，如果形成运行时等待环，必须报错而不是挂起。递归定义必要时由使用方补结果类型。
-
-## 9. Ownership 与 dispose
-
-factory 返回值由当前 Cyrene 管理，但 bindings.value 中的对象或函数始终视为借用资源，即使绑定未使用、或 factory 原样返回同一引用，也不自动释放。对借用对象配置显式 dispose 会使该次解析失败，cause 为 InvalidDependencyError，不转移所有权。仅比较顶层对象身份，不递归推断包装对象、嵌套字段或 Promise 解包后的资源归属；外部资源应直接作为 value 提供，异步构造使用 dependency binding。
-
-对象和函数按返回值引用合并为资源节点，同一资源最多清理一次；原始值按每次实例记录分别清理。合并所有别名的实际依赖边后，再计算资源释放顺序，避免某个别名导致资源早于其他消费者被释放。
-
-释放优先级：options.dispose → Symbol.asyncDispose → Symbol.dispose，只执行一个。
-
-同一资源的显式 dispose 优先于所有别名的自动清理方法，与初始化完成顺序无关。多个别名使用同一显式函数引用合法；不同显式函数引用视为冲突，后完成的解析以 ResolutionError 失败，cause 为 InvalidDependencyError。已登记的清理方法保留，冲突别名的依赖边也保留，最终仍统一清理。不能依赖并发顺序选择冲突函数，调用者应复用同一个 disposer。
-
-dispose 首次调用立即禁止新的 start/resolve，等待已经开始的初始化结束，再按合并后的实际资源依赖边先消费者后依赖释放。lazy 激活或对象别名合并造成资源环时无法严格拓扑排序，确定性打破环，仍每个资源只释放一次。
-
-清理失败继续释放其他资源，最后抛 AggregateError。重复 dispose 返回相同 Promise，包括失败结果；完成后清空缓存与持有引用。释放期间和之后解析抛 DisposedError。
-
-## 10. 诊断
-
-错误类型：CyreneError、CircularDependencyError、MissingBindingError、InvalidDependencyError、ResolutionError、DisposedError。多个并行错误和释放错误使用原生 AggregateError。
-
-ResolutionError 保留 cause 与依赖路径。debugName 为可选手工标签，Token 名称仅用于诊断。
-
-inspect 返回 roots/nodes/edges，roots 是按入口声明顺序去重的节点 ID，显式保留同时被其他入口依赖的入口。节点包括 Dependency、Ref、Token，边区分强依赖、lazy 及 Ref 的定义关系。参数保留为 Ref metadata，不生成参数节点。不会执行 factory。
-
-独立函数 formatGraph(graph: DependencyGraph): string 将图转换为终端树形文本，不直接打印。各入口间用空行分隔，节点显示名称和 ID；共享节点标记 ↗，当前路径循环标记 ↻，不重复展开。lazy、ref、token、definition 使用标签区分，definition 边仅展示定义身份，不沿该边展开。空图返回 (empty graph)，不输出参数值。名称中的换行和制表符转为空格，保持一行一个节点。
-
-## 11. v0 范围
-
-实现 callable Dependency、Ref、Token、binding、lazy、命名入口启动、按需解析、validate/inspect、两种 lifetime、并发去重、失败重试和资源释放。
-
-暂不实现插件 hooks、DevTools、自动命名 transform、子作用域、动态入口、装饰器、扫描、Proxy、可选 Token 或框架适配器。
-
-每次 resolve 都会重新校验目标图，包括 lazy 可达图；暂不缓存校验结果。transient 创建的资源会被当前 Cyrene 持有直到整体释放，高频短任务应使用独立 Cyrene 控制生命周期。dispose 不提供超时或取消，未结束的初始化会延长清理等待；这两类优化需根据实际负载另行设计。
-
-测试覆盖类型推导、普通值函数、identity、入口统一校验、未使用的绑定、并发失败、lazy 循环、资源归属/顺序及初始化与释放竞争。使用 vp check、vp test、vp pack 验证，vp run ready 聚合执行。
+- 工厂结果使用 `Awaited<T>`, 同步 / 异步信息决定解析入口是否返回 Promise。
+- key 泛型擦除为 `string` 后会失去精确属性提示, 应保留推导或显式标注。
+- 公共声明只暴露只读 key 与类型标记, 工厂配方保存在内部 WeakMap。
+- 消费方声明生成与库打包分别验证, 循环依赖统一留给运行时检查。

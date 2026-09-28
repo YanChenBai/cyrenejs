@@ -43,19 +43,20 @@
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
     "changelogen": "catalog:",
-    "typescript": "^7.0.2",
+    "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "12.4.2",
+      "version": "12.6.0",
       "onFail": "download"
     }
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.6.0"
   }
 }

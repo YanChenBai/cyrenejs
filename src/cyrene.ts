@@ -1,53 +1,41 @@
+import { assertDependency, getDefinition } from './dependency.ts';
 import {
   CircularDependencyError,
   DisposedError,
   InvalidDependencyError,
   ResolutionError,
 } from './errors.ts';
-import { getBinding, inspectGraph } from './graph.ts';
-import {
-  assertResolvable,
-  assertRipples,
-  entries,
-  getDefinition,
-  getLazyTarget,
-  isDependency,
-  isLazy,
-  isObject,
-  isRef,
-  isToken,
-  targetName,
-} from './metadata.ts';
+import { compileRegistry } from './registry.ts';
+import type { Registry } from './registry.ts';
+import { ResourceStore } from './resources.ts';
 import type {
-  Binding,
-  CyreneOptions,
+  Dependency,
   DependencyEntries,
   DependencyGraph,
-  Resolvable,
+  DependencyAsync,
+  Resolved,
   ResolveEntries,
-  Token,
+  InferInput,
+  NodeState,
+  EntryDeclarations,
 } from './types.ts';
+import { inputEntries } from './utils.ts';
 
-interface Instance {
-  target: Resolvable;
-  // 资源依赖保留到释放时, 等待关系只存在于初始化期间
-  dependencies: Set<Instance>;
-  waitingFor: Set<Instance>;
-  promise: Promise<unknown>;
-  state: 'initializing' | 'ready' | 'failed';
+interface Resolution {
+  key: string;
+  parent?: Resolution;
+  state: Exclude<NodeState, 'registered'>;
   value?: unknown;
-  resource?: Resource;
+  error?: unknown;
+  executing: boolean;
+  resultDeferred?: boolean;
+  /** 仅保存尚未完成的初始化等待边，不维护第二份资源依赖图。 */
+  waiting: Set<Resolution>;
 }
 
-interface Resource {
-  dependencies: Set<Resource>;
-  dispose?: () => void | Promise<void>;
-  explicitDispose?: (value: unknown) => void | Promise<void>;
-}
-
-async function settle<T>(promises: readonly Promise<T>[]): Promise<T[]> {
-  // 某个分支失败后仍等待其他分支结束, 避免遗漏稍后创建的资源
-  const results = await Promise.allSettled(promises);
+/** 等待所有分支结束后报告失败，确保 dispose 不遗漏晚到的资源。 */
+async function settle<T>(tasks: Promise<T>[]): Promise<T[]> {
+  const results = await Promise.allSettled(tasks);
 
   const errors = results
     .filter(result => result.status === 'rejected')
@@ -57,122 +45,142 @@ async function settle<T>(promises: readonly Promise<T>[]): Promise<T[]> {
     throw errors[0];
   }
 
-  if (errors.length > 1) {
+  if (errors.length) {
     throw new AggregateError(errors, 'Multiple dependencies failed');
   }
 
   return results.map(result => (result as PromiseFulfilledResult<T>).value);
 }
 
-export class Cyrene<
-  TRipples extends DependencyEntries = {},
-  const TBindings extends readonly Binding[] = readonly Binding[],
-> {
-  #ripples: Readonly<TRipples>;
-  readonly #bindings = new Map<Token, Binding>();
-  readonly #cache = new Map<object, Instance>();
-  readonly #instances = new Set<Instance>();
-  readonly #pending = new Set<Promise<unknown>>();
-  readonly #borrowed = new Set<object>();
-  readonly #resources = new Map<object, Resource>();
-  #state: 'active' | 'disposing' | 'disposed' = 'active';
-  #startup?: Promise<ResolveEntries<TRipples>>;
-  #disposal?: Promise<void>;
+export class Cyrene<TRipples extends DependencyEntries = {}> {
+  #roots = new Map<string, Dependency>();
 
-  constructor(options: CyreneOptions<TRipples, TBindings> = {}) {
-    assertRipples(options.ripples ?? {});
-    this.#ripples = Object.freeze({ ...options.ripples }) as Readonly<TRipples>;
+  #overrides = new Map<Dependency, Dependency>();
 
-    for (const binding of options.bindings ?? []) {
-      if (!isToken(binding.token)) {
-        throw new InvalidDependencyError('Binding requires a Token');
-      }
+  #identities = new Map<Dependency, string>();
 
-      if (Object.hasOwn(binding, 'value') === Object.hasOwn(binding, 'dependency')) {
-        throw new InvalidDependencyError(
-          `Binding ${binding.token.name} requires exactly one of value or dependency`,
-        );
-      }
+  #registry: Registry | undefined;
 
-      if (this.#bindings.has(binding.token)) {
-        throw new InvalidDependencyError(`Duplicate binding: ${binding.token.name}`);
-      }
+  #cache = new Map<string, Resolution>();
 
-      if ('dependency' in binding) {
-        assertResolvable(binding.dependency);
-      }
+  #states = new Map<string, NodeState>();
 
-      this.#bindings.set(binding.token, Object.freeze({ ...binding }));
+  #executing = new Set<string>();
 
-      if ('value' in binding && isObject(binding.value)) {
-        this.#borrowed.add(binding.value);
-      }
-    }
+  #pending = new Set<Promise<unknown>>();
+
+  #resources = new ResourceStore();
+
+  #state: 'configuring' | 'active' | 'disposing' | 'disposed' = 'configuring';
+
+  #disposal: Promise<void> | undefined;
+
+  #ripples: Record<string, unknown> = Object.create(null);
+
+  #view = new Proxy(this.#ripples, {
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+    setPrototypeOf: () => false,
+    preventExtensions: () => false,
+  });
+
+  get ripples(): ResolveEntries<TRipples> {
+    return this.#view as ResolveEntries<TRipples>;
   }
 
-  start(): Promise<ResolveEntries<TRipples>> {
-    if (this.#state !== 'active') {
-      return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
-    }
+  /** 显式入口原地累积；依赖在构图时自动收集，不暴露为属性。 */
+  use<const T extends readonly Dependency[]>(
+    ...declarations: T
+  ): Cyrene<TRipples & EntryDeclarations<T>>;
+  use(...declarations: Dependency[]): unknown {
+    this.#assertConfiguring();
+    const incoming = new Map<string, Dependency>();
 
-    if (this.#startup) {
-      return this.#startup;
-    }
+    for (const declaration of declarations) {
+      assertDependency(declaration);
+      const existing = incoming.get(declaration.key) ?? this.#roots.get(declaration.key);
 
-    this.#startup = this.#track(
-      Promise.resolve().then(async () => {
-        const ripples = Object.entries(this.#ripples);
-        // 全部入口统一校验后才开始初始化, 避免后面的入口无效却已产生副作用
-        inspectGraph(
-          ripples.map(([, target]) => target),
-          this.#bindings,
-        );
+      if (existing && existing !== declaration) {
+        throw new InvalidDependencyError(`Duplicate Ripple key: ${declaration.key}`);
+      }
 
-        const values = await settle(
-          ripples.map(([, target]) => this.#resolveTarget(target, undefined, [])),
-        );
-
-        return Object.fromEntries(
-          ripples.map(([name], index) => [name, values[index]]),
-        ) as ResolveEntries<TRipples>;
-      }),
-    );
-    return this.#startup;
-  }
-
-  resolve<T>(target: Resolvable<T>): Promise<T> {
-    if (this.#state !== 'active') {
-      return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
+      incoming.set(declaration.key, declaration);
     }
 
-    return this.#track(
-      Promise.resolve().then(() => {
-        inspectGraph([target], this.#bindings);
-        return this.#resolveTarget(target, undefined, []);
-      }),
-    ) as Promise<T>;
+    for (const [key, declaration] of incoming) {
+      if (this.#roots.has(key)) {
+        continue;
+      }
+
+      this.#roots.set(key, declaration);
+      Object.defineProperty(this.#ripples, key, {
+        enumerable: true,
+        get: () => this.resolve(declaration),
+      });
+      this.#registry = undefined;
+    }
+
+    return this;
   }
 
-  validate(target?: Resolvable): void {
-    this.inspect(target);
+  /** 替换以原声明定位，保留原 key 与公开范围；构图时检查目标可达性。 */
+  override<D extends Dependency>(
+    target: D,
+    replacement: Dependency<NoInfer<InferInput<D>>, unknown, NoInfer<DependencyAsync<D>>>,
+  ): this {
+    this.#assertConfiguring();
+    assertDependency(target);
+    assertDependency(replacement);
+    this.#overrides.set(target, replacement);
+    this.#registry = undefined;
+
+    return this;
   }
 
-  inspect(target?: Resolvable): DependencyGraph {
-    this.#assertActive();
-    return inspectGraph(
-      target === undefined ? Object.values(this.#ripples) : [target],
-      this.#bindings,
-    );
+  resolve<D extends Dependency>(target: D): Resolved<D>;
+  resolve<K extends string>(key: K): K extends keyof TRipples ? Resolved<TRipples[K]> : unknown;
+
+  /** 三种入口遵循同一 lifetime；singleton 复用结果，transient 每次重新创建。 */
+  resolve(target: string | Dependency): unknown {
+    if (this.#state === 'disposing' || this.#state === 'disposed') {
+      throw new DisposedError('Cyrene is disposing or disposed');
+    }
+
+    this.#state = 'active';
+    Object.preventExtensions(this.#ripples);
+    this.#compile();
+    const key = this.#resolveKey(target);
+    this.#require(key);
+
+    return this.#resolve(key);
   }
 
+  inspect(): DependencyGraph {
+    const registry = this.#compile();
+
+    return {
+      roots: [...this.#roots.keys()],
+      nodes: [...registry.keys()].map(key => ({
+        key,
+        state: this.#states.get(key) ?? 'registered',
+      })),
+      edges: [...registry.values()].flatMap(node =>
+        [...node.dependencies.values()].map(edge => ({ ...edge })),
+      ),
+    };
+  }
+
+  /** 关闭入口后等待已接收的初始化，再逆序清理；业务方法的在途工作由应用停止。 */
   dispose(): Promise<void> {
     if (this.#disposal) {
       return this.#disposal;
     }
 
-    // 同步关闭新解析入口, 清理过程等待已经接收的任务结束
     this.#state = 'disposing';
-    this.#disposal = Promise.resolve().then(() => this.#dispose());
+    // 先保存关闭 Promise，再执行用户清理代码，保证同步重入 dispose 仍然幂等。
+    this.#disposal = Promise.resolve().then(() => this.#close());
+
     return this.#disposal;
   }
 
@@ -180,342 +188,367 @@ export class Cyrene<
     return this.dispose();
   }
 
-  #assertActive(): void {
-    if (this.#state !== 'active') {
-      throw new DisposedError('Cyrene is disposing or disposed');
+  #assertConfiguring(): void {
+    if (this.#state !== 'configuring') {
+      throw new InvalidDependencyError('Registrations are locked after the first resolution');
     }
   }
 
-  #track<T>(promise: Promise<T>): Promise<T> {
-    this.#pending.add(promise);
-    void promise.then(
-      () => this.#pending.delete(promise),
-      () => this.#pending.delete(promise),
-    );
-    return promise;
+  #compile(): Registry {
+    if (!this.#registry) {
+      const compiled = compileRegistry(this.#roots.values(), this.#overrides);
+      this.#registry = compiled.registry;
+      this.#identities = compiled.identities;
+    }
+
+    return this.#registry;
   }
 
-  async #resolveTarget(
-    target: Resolvable,
-    owner: Instance | undefined,
-    path: readonly string[],
-  ): Promise<unknown> {
-    assertResolvable(target);
+  #require(key: string): void {
+    if (!this.#registry!.has(key)) {
+      throw new InvalidDependencyError(`Unknown registration key: ${key}`);
+    }
+  }
 
-    if (isToken(target)) {
-      const binding = getBinding(this.#bindings, target, path);
+  #resolveKey(target: string | Dependency): string {
+    if (typeof target === 'string') {
+      return target;
+    }
 
-      if ('dependency' in binding) {
-        assertResolvable(binding.dependency);
-        return this.#resolveTarget(binding.dependency, owner, [...path, target.name]);
+    assertDependency(target);
+
+    const key = this.#identities.get(target);
+
+    if (key !== undefined) {
+      return key;
+    }
+
+    throw new InvalidDependencyError('Unregistered Ripple declaration');
+  }
+
+  #resolve(key: string, owner?: Resolution): unknown {
+    return this.#result(this.#resolveRecord(key, owner), owner);
+  }
+
+  /** singleton 复用缓存，transient 保留独立的初始化记录与等待关系。 */
+  #resolveRecord(key: string, owner?: Resolution, deferred = false): Resolution {
+    let record = this.#cache.get(key);
+    const fresh = !record;
+
+    if (!record) {
+      record = this.#newRecord(key, owner);
+    }
+
+    if (!fresh && record.executing && (!owner || deferred)) {
+      throw new CircularDependencyError(`Circular initialization: ${owner?.key ?? key} -> ${key}`);
+    }
+
+    if (!deferred && owner) {
+      this.#waitFor(record, owner);
+    }
+
+    if (fresh) {
+      this.#create(record);
+    }
+
+    return record;
+  }
+
+  #newRecord(key: string, owner?: Resolution): Resolution {
+    this.#assertCreationPath(key, owner);
+
+    const record: Resolution = {
+      key,
+      parent: owner,
+      state: 'initializing',
+      executing: true,
+      waiting: new Set(),
+    };
+
+    const definition = getDefinition(this.#registry!.get(key)!.implementation);
+
+    if (definition.options.lifetime !== 'transient') {
+      this.#cache.set(key, record);
+    }
+
+    return record;
+  }
+
+  /** 等待边只连接尚未完成的具体实例，不按声明 key 合并 transient。 */
+  #waitFor(target: Resolution, owner: Resolution): void {
+    if (owner.state !== 'initializing' || target.state !== 'initializing') {
+      return;
+    }
+
+    if (this.#reaches(target, owner)) {
+      throw new CircularDependencyError(`Circular initialization: ${owner.key} -> ${target.key}`);
+    }
+
+    owner.waiting.add(target);
+  }
+
+  /** transient 递归会不断产生新记录，须按仍在初始化的创建链阻止无限展开。 */
+  #assertCreationPath(key: string, owner?: Resolution): void {
+    if (this.#executing.has(key)) {
+      throw new CircularDependencyError(`Circular initialization: ${key}`);
+    }
+
+    for (let ancestor = owner; ancestor?.state === 'initializing'; ancestor = ancestor.parent) {
+      if (ancestor.key === key) {
+        throw new CircularDependencyError(`Circular initialization: ${owner?.key} -> ${key}`);
+      }
+    }
+  }
+
+  #result(record: Resolution, owner?: Resolution): unknown {
+    // lazy 启动的消费者可以先等待执行中的父工厂，待其交付结果后再继续。
+    let value = record.value;
+
+    if (record.executing) {
+      record.resultDeferred = true;
+      value = Promise.resolve().then(() => this.#result(record));
+    }
+
+    if (isPromise(value)) {
+      if (owner) {
+        const release = () => {
+          owner.waiting.delete(record);
+        };
+
+        // 旁路清理同时处理成功和失败，不改变原 Promise 的身份与拒绝结果。
+        void Promise.resolve(value).then(release, release);
       }
 
-      // 外部值不进入实例持有集合, 生命周期仍由提供方管理
-      return binding.value;
+      return value;
     }
 
-    const definition = getDefinition(isRef(target) ? target.dependency : target);
-    const isSingleton = definition.options.lifetime !== 'transient';
+    owner?.waiting.delete(record);
 
-    if (!isSingleton && owner) {
-      this.#assertNoTransientCycle(target, owner, path);
+    if (record.state === 'failed') {
+      throw record.error;
     }
 
-    let instance = isSingleton ? this.#cache.get(target) : undefined;
+    return value;
+  }
 
-    if (!instance) {
-      instance = {
-        target,
-        dependencies: new Set(),
-        waitingFor: new Set(),
-        promise: Promise.resolve(),
-        state: 'initializing',
-      };
-      const created = instance;
-
-      // 先记录状态, 再在微任务中执行工厂, 保证并发解析共享同一次初始化
-      if (isSingleton) {
-        this.#cache.set(target, created);
-      }
-
-      this.#instances.add(created);
-      const nextPath = [...path, targetName(target)];
-      created.promise = this.#track(
-        Promise.resolve().then(async () => {
-          try {
-            const inputs = entries(definition.inputs);
-
-            const values = await settle(
-              inputs.map(([, input]) => this.#resolveInput(input, created, nextPath)),
-            );
-
-            const dependencies = Object.fromEntries(
-              inputs.map(([key], index) => [key, values[index]!.value]),
-            );
-
-            const value = await definition.invoke(dependencies, isRef(target) ? target.params : []);
-
-            created.value = value;
-            created.resource = this.#resourceFor(value);
-            this.#configureDisposer(created.resource, value, definition.options.dispose);
-            created.state = 'ready';
-            return value;
-          } catch (cause) {
-            created.state = 'failed';
-
-            // 已返回资源的失败别名仍携带依赖关系, 清理时不能丢弃
-            if (!created.resource) {
-              this.#instances.delete(created);
-            }
-
-            // 只移除失败实例的缓存, 不重置 start 已记录的失败结果
-            if (isSingleton) {
-              this.#cache.delete(target);
-            }
-
-            if (cause instanceof ResolutionError || cause instanceof CircularDependencyError) {
-              throw cause;
-            }
-
-            throw new ResolutionError(nextPath, cause);
-          }
-        }),
-      );
-    }
-
-    if (!owner) {
-      return instance.promise;
-    }
-
-    // 延迟依赖激活后也记录资源关系, 释放顺序不能只依赖创建时间
-    owner.dependencies.add(instance);
-
-    if (instance.state === 'initializing') {
-      if (this.#reaches(instance, owner, new Set())) {
-        throw new CircularDependencyError(
-          `Circular initialization: ${[...path, targetName(target)].join(' -> ')}`,
-        );
-      }
-
-      owner.waitingFor.add(instance);
-    }
+  #create(record: Resolution): void {
+    this.#states.set(record.key, 'initializing');
+    this.#executing.add(record.key);
 
     try {
-      return await instance.promise;
-    } finally {
-      owner.waitingFor.delete(instance);
-    }
-  }
+      const value = this.#initialize(record);
 
-  #assertNoTransientCycle(target: Resolvable, owner: Instance, path: readonly string[]): void {
-    // transient 没有缓存, 按正在等待的实例链检测重复身份, 避免 lazy 环无限创建实例
-    for (const pending of this.#instances) {
-      if (
-        pending.target === target &&
-        pending.state === 'initializing' &&
-        this.#reaches(pending, owner, new Set())
-      ) {
-        throw new CircularDependencyError(
-          `Circular initialization: ${[...path, targetName(target)].join(' -> ')}`,
+      if (isPromise(value)) {
+        const promise = Promise.resolve(value)
+          .then(result => this.#complete(record, result))
+          .catch(cause => {
+            throw this.#fail(record, cause);
+          });
+
+        record.value = promise;
+        this.#pending.add(promise);
+        void promise.then(
+          () => this.#pending.delete(promise),
+          () => this.#pending.delete(promise),
         );
+      } else {
+        const result = this.#complete(record, value);
+
+        // 同步环无法交付同步实例；已返回的资源仍须登记并在关闭时释放。
+        if (record.resultDeferred) {
+          throw new CircularDependencyError(`Circular synchronous initialization: ${record.key}`);
+        }
+
+        record.value = result;
       }
+    } catch (cause) {
+      this.#fail(record, cause);
+    } finally {
+      record.executing = false;
+      this.#executing.delete(record.key);
     }
   }
 
-  async #resolveInput(
-    input: unknown,
-    owner: Instance,
-    path: readonly string[],
-  ): Promise<{ value: unknown }> {
-    if (isLazy(input)) {
-      const target = getLazyTarget(input);
-      return {
-        value: Object.freeze({
-          resolve: () => {
-            if (this.#state !== 'active') {
-              return Promise.reject(new DisposedError('Cyrene is disposing or disposed'));
-            }
+  #complete(record: Resolution, value: unknown): unknown {
+    const definition = getDefinition(this.#registry!.get(record.key)!.implementation);
+    this.#resources.add(value, definition.options.ownership ?? 'owned');
+    record.state = 'ready';
+    this.#states.set(record.key, 'ready');
+    record.waiting.clear();
 
-            return this.#track(
-              Promise.resolve().then(() => {
-                inspectGraph([target], this.#bindings);
-                return this.#resolveTarget(
-                  target,
-                  owner,
-                  owner.state === 'initializing' ? path : [],
-                );
-              }),
-            );
-          },
-        }),
-      };
-    }
-
-    if (isDependency(input) || isRef(input) || isToken(input)) {
-      assertResolvable(input);
-      return { value: await this.#resolveTarget(input, owner, path) };
-    }
-
-    // 包装普通值, 避免 async 返回时自动展开作为输入传入的 Promise
-    return { value: input };
+    return value;
   }
 
-  #reaches(instance: Instance, target: Instance, visited: Set<Instance>): boolean {
-    if (instance === target) {
+  #fail(record: Resolution, cause: unknown): unknown {
+    record.state = 'failed';
+    this.#states.set(record.key, 'failed');
+    record.waiting.clear();
+    record.error =
+      cause instanceof CircularDependencyError || cause instanceof ResolutionError
+        ? cause
+        : new ResolutionError([record.key], cause);
+
+    return record.error;
+  }
+
+  #reaches(source: Resolution, target: Resolution, visited = new Set<Resolution>()): boolean {
+    if (source === target) {
       return true;
     }
 
-    if (visited.has(instance)) {
+    if (visited.has(source)) {
       return false;
     }
 
-    visited.add(instance);
-    return [...instance.waitingFor].some(child => this.#reaches(child, target, visited));
+    visited.add(source);
+
+    return [...source.waiting].some(child => this.#reaches(child, target, visited));
   }
 
-  #resourceFor(value: unknown): Resource {
-    if (!isObject(value)) {
-      return { dependencies: new Set() };
-    }
-
-    let resource = this.#resources.get(value);
-
-    if (!resource) {
-      resource = { dependencies: new Set() };
-      this.#resources.set(value, resource);
-    }
-
-    return resource;
-  }
-
-  #configureDisposer(
-    resource: Resource,
-    value: unknown,
-    dispose?: (value: unknown) => void | Promise<void>,
-  ): void {
-    if (isObject(value) && this.#borrowed.has(value)) {
-      if (dispose) {
-        throw new InvalidDependencyError('Cannot configure disposal for a borrowed binding value');
-      }
-
-      return;
-    }
-
-    if (dispose) {
-      if (resource.explicitDispose && resource.explicitDispose !== dispose) {
-        throw new InvalidDependencyError('Conflicting disposers for the same resource');
-      }
-
-      resource.explicitDispose = dispose;
-      resource.dispose = () => dispose(value);
-      return;
-    }
-
-    if (!isObject(value) || resource.dispose) {
-      return;
-    }
-
-    const method = Reflect.get(value, Symbol.asyncDispose) ?? Reflect.get(value, Symbol.dispose);
-
-    if (typeof method === 'function') {
-      resource.dispose = () => method.call(value);
-    }
-  }
-
-  async #dispose(): Promise<void> {
-    // 已接收的任务仍可能创建间接依赖, 持续等待直到没有在途任务
-    while (this.#pending.size) {
-      await Promise.allSettled(this.#pending);
-    }
-
-    const instances = new Map<Instance, Resource>();
-
-    const collect = (instance: Instance): Resource => {
-      const existing = instances.get(instance);
-
-      if (existing) {
-        return existing;
-      }
-
-      const resource = instance.resource ?? { dependencies: new Set<Resource>() };
-      instances.set(instance, resource);
-
-      for (const dependency of instance.dependencies) {
-        const child = collect(dependency);
-
-        if (child !== resource) {
-          resource.dependencies.add(child);
-        }
-      }
-
-      return resource;
-    };
-
-    for (const instance of this.#instances) {
-      collect(instance);
-    }
-
-    const visited = new Set<Resource>();
-    const order: Resource[] = [];
-
-    const visit = (resource: Resource) => {
-      if (visited.has(resource)) {
-        return;
-      }
-
-      visited.add(resource);
-
-      for (const dependency of resource.dependencies) {
-        visit(dependency);
-      }
-
-      order.push(resource);
-    };
-
-    for (const resource of instances.values()) {
-      visit(resource);
-    }
-
+  #initialize(record: Resolution): unknown {
+    const registration = this.#registry!.get(record.key)!;
+    const definition = getDefinition(registration.implementation);
+    const resolved: Record<PropertyKey, unknown> = {};
+    const pending: Promise<void>[] = [];
     const errors: unknown[] = [];
 
-    // 后序遍历反转后先释放消费者, visited 同时避免延迟资源环重复遍历
-    for (const resource of order.reverse()) {
-      if (!resource.dispose) {
-        continue;
-      }
+    for (const [key, input] of inputEntries(definition.inputs)) {
+      const edge = registration.dependencies.get(key);
 
       try {
-        await resource.dispose();
+        if (!edge) {
+          Object.defineProperty(resolved, key, { value: input, enumerable: true });
+          continue;
+        }
+
+        const value =
+          edge.kind === 'lazy' ? this.#lazyHandle(edge.to, record) : this.#resolve(edge.to, record);
+
+        const assign = (value: unknown) => {
+          Object.defineProperty(resolved, key, { value, enumerable: true });
+        };
+
+        if (isPromise(value)) {
+          pending.push(Promise.resolve(value).then(assign));
+        } else {
+          assign(value);
+        }
       } catch (error) {
         errors.push(error);
       }
     }
 
-    for (const resource of order) {
-      resource.dependencies.clear();
-      resource.dispose = undefined;
-      resource.explicitDispose = undefined;
+    if (pending.length) {
+      return settle([...pending, ...errors.map(error => Promise.reject(error))]).then(() =>
+        definition.invoke(resolved),
+      );
     }
 
-    for (const instance of instances.keys()) {
-      instance.dependencies.clear();
-      instance.waitingFor.clear();
-      instance.value = undefined;
-      instance.resource = undefined;
-      instance.promise = Promise.resolve();
+    if (errors.length === 1) {
+      throw errors[0];
     }
-
-    this.#ripples = Object.freeze({}) as Readonly<TRipples>;
-    this.#cache.clear();
-    this.#instances.clear();
-    this.#bindings.clear();
-    this.#borrowed.clear();
-    this.#resources.clear();
-    this.#startup = undefined;
-    this.#state = 'disposed';
 
     if (errors.length) {
-      throw new AggregateError(errors, 'Failed to dispose Cyrene resources');
+      throw new AggregateError(errors, 'Multiple dependencies failed');
+    }
+
+    return definition.invoke(resolved);
+  }
+
+  #lazyHandle(key: string, owner: Resolution) {
+    const pending = new WeakMap<Resolution, Promise<unknown>>();
+
+    return Object.freeze({
+      resolve: () => {
+        const isClosed =
+          this.#state === 'disposed' ||
+          (this.#state === 'disposing' && owner.state !== 'initializing');
+
+        if (isClosed || owner.state === 'failed') {
+          throw new DisposedError('Lazy owner is unavailable');
+        }
+
+        const target = this.#resolveRecord(key, owner, true);
+        const value = this.#result(target);
+
+        if (owner.state !== 'initializing' || !isPromise(value)) {
+          return value;
+        }
+
+        // 启动 lazy 不等于等待；只有消费 Promise 时才登记等待关系。
+        const existing = pending.get(target);
+
+        if (existing) {
+          return existing;
+        }
+
+        const promise = new LazyPromise(Promise.resolve(value), () => {
+          this.#waitFor(target, owner);
+          this.#result(target, owner);
+        });
+
+        pending.set(target, promise);
+
+        return promise;
+      },
+    });
+  }
+
+  async #close(): Promise<void> {
+    try {
+      while (this.#pending.size) {
+        await Promise.allSettled(this.#pending);
+      }
+
+      // 真实依赖引用不失效，消费者的清理方法仍可使用尚未释放的依赖。
+      await this.#resources.dispose();
+    } finally {
+      this.#state = 'disposed';
+      this.#cache.clear();
+      this.#states.clear();
+      this.#roots.clear();
+      this.#overrides.clear();
+      this.#identities.clear();
+      this.#registry = undefined;
     }
   }
+}
+
+/** Promise 子类让 await 也经过 then，派生结果使用原生 Promise。 */
+class LazyPromise extends Promise<unknown> {
+  #beforeWait: () => void;
+
+  static get [Symbol.species]() {
+    return Promise;
+  }
+
+  constructor(promise: Promise<unknown>, beforeWait: () => void) {
+    super((resolve, reject) => promise.then(resolve, reject));
+    this.#beforeWait = beforeWait;
+    // 仅启动而未消费的句柄不应额外产生未处理拒绝。
+    void super.then(undefined, () => {});
+  }
+
+  // 此类本身就是 Promise，需要拦截 await 的同化过程。
+  // oxlint-disable-next-line unicorn/no-thenable
+  override then<TResult1 = unknown, TResult2 = never>(
+    onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    try {
+      this.#beforeWait();
+    } catch (error) {
+      return Promise.reject(error).then(onfulfilled, onrejected);
+    }
+
+    return super.then(onfulfilled, onrejected);
+  }
+}
+
+function isPromise(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof Reflect.get(value, 'then') === 'function'
+  );
 }

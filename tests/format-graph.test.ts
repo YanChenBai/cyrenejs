@@ -1,53 +1,65 @@
-import { expect, it, vi } from 'vite-plus/test';
+import { expect, it } from 'vite-plus/test';
 
-import { Cyrene, formatGraph, lazy, ripple, token } from '../src/index.ts';
-import type { Dependency, Lazy } from '../src/index.ts';
+import { Cyrene, formatGraph, lazy, ripple } from '../src/index.ts';
 
-it('绘制命名节点、Token、共享依赖和仍作为入口的子节点', () => {
-  const Config = token<string>('Config');
-  const factory = vi.fn(() => ({}));
-  const database = ripple({ config: Config }, factory, { debugName: 'Database' });
-  const users = ripple({ database }, factory, { debugName: 'Users' });
-
-  const app = new Cyrene({
-    ripples: { users, database },
-    bindings: [{ token: Config, value: 'secret' }],
-  });
-
-  const graph = app.inspect();
-  expect(graph.roots).toEqual([0, 1]);
-  expect(formatGraph(graph)).toBe(
-    'Users #0\n└─ Database #1\n   └─ Config #2 [token]\n\n↗ Database #1',
-  );
-  expect(factory).not.toHaveBeenCalled();
-  expect(app.inspect(database).roots).toEqual([0]);
+it('诊断使用容器 key，保留依赖属性、lazy 边与初始化状态', async () => {
+  const database = ripple('database', () => ({}));
+  const root = ripple('root', { database, later: lazy(() => database) }, deps => deps);
+  const app = new Cyrene().use(root, database);
+  expect(app.inspect().nodes).toEqual([
+    { key: 'root', state: 'registered' },
+    { key: 'database', state: 'registered' },
+  ]);
+  expect(app.inspect().edges).toEqual([
+    { from: 'root', to: 'database', input: 'database', kind: 'dependency' },
+    { from: 'root', to: 'database', input: 'later', kind: 'lazy' },
+  ]);
+  expect(app.inspect().nodes.every(node => node.state === 'registered')).toBe(true);
+  app.resolve('root');
+  expect(app.inspect().nodes.every(node => node.state === 'ready')).toBe(true);
+  expect(formatGraph(app.inspect())).toContain('[lazy]');
+  expect(formatGraph(app.inspect())).toContain('↗');
+  await app.dispose();
+  expect(formatGraph(app.inspect())).toBe('(empty graph)');
 });
 
-it('标记 lazy 循环, 不执行工厂', () => {
-  const a: Dependency<{ b: Lazy<number> }> = ripple({ b: lazy(() => b) }, ({ b }) => ({ b }), {
-    debugName: 'A',
-  });
-
-  const b = ripple({ a }, () => 1, { debugName: 'B' });
-  expect(formatGraph(new Cyrene({ ripples: { a } }).inspect())).toBe(
-    'A #0\n└─ B #1 [lazy]\n   └─ ↻ A #0',
-  );
+it('修改诊断快照不影响解析图', async () => {
+  const dependency = ripple('dependency', () => 42);
+  const root = ripple('root', { dependency }, deps => deps);
+  const app = new Cyrene().use(root, dependency);
+  const snapshot = app.inspect();
+  snapshot.edges[0]!.to = 'unknown';
+  snapshot.nodes.length = 0;
+  expect(app.resolve('root')).toEqual({ dependency: 42 });
+  await app.dispose();
 });
 
-it('Ref 定义关系不抢先展开直接入口, 不输出参数', () => {
-  const dependency = ripple({}, () => 1, { debugName: 'Value' });
-  const ref = dependency();
-  const graph = new Cyrene({ ripples: { ref, dependency } }).inspect();
-  expect(formatGraph(graph)).toBe('Value(ref) #0 [ref]\n└─ Value #1 [definition]\n\nValue #1');
-  const parameterized = ripple({}, (_deps, secret: string) => secret, { debugName: 'Secret' });
-  const secretGraph = new Cyrene().inspect(parameterized('password'));
-  expect(formatGraph(secretGraph)).not.toContain('password');
+it('格式化单个 key、lazy 环和特殊字符，不再重复显示名称和 ID', () => {
+  expect(
+    formatGraph({
+      roots: ['service\nname'],
+      nodes: [{ key: 'service\nname', state: 'registered' }],
+      edges: [{ from: 'service\nname', to: 'service\nname', input: 'self', kind: 'lazy' }],
+    }),
+  ).toBe('service name\n└─ ↻ service name [lazy]');
 });
 
-it('空图和重复入口有确定输出', () => {
-  expect(formatGraph(new Cyrene().inspect())).toBe('(empty graph)');
-  const service = ripple({}, () => 1, { debugName: 'Service' });
-  const graph = new Cyrene({ ripples: { first: service, second: service } }).inspect();
-  expect(graph.roots).toEqual([0]);
-  expect(formatGraph(graph)).toBe('Service #0');
+it.each([
+  ['service\r\n\tname', 'service   name'],
+  ['\u001B[2J\u001B[31mservice\u001B[0m', 'service'],
+  ['\u001B]0;window title\u0007service', 'service'],
+  ['\u001B]8;;https://example.com\u001B\\service\u001B]8;;\u001B\\', 'service'],
+  ['\u009B31m\u009D0;window title\u009Cservice\u009B0m', 'service'],
+  ['\u001B(Bservice\u001B7', 'service'],
+  ['\u001BPprivate data\u001B\\service', 'service'],
+  ['service\u001B]0;unterminated title', 'service'],
+  ['服\u0000务\u0007名\u0008称\u000B\u000C\u007F\u0085\u009F', '服务名称'],
+])('图名称清除终端控制序列并保留可读字符：%j', (key, name) => {
+  expect(
+    formatGraph({
+      roots: [key],
+      nodes: [{ key, state: 'registered' }],
+      edges: [{ from: key, to: key, input: 'self', kind: 'lazy' }],
+    }),
+  ).toBe(`${name}\n└─ ↻ ${name} [lazy]`);
 });

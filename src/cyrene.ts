@@ -59,7 +59,7 @@ export class Cyrene<TRipples extends DependencyEntries = {}> {
 
   #identities = new Map<Dependency, string>();
 
-  #registry?: Registry;
+  #registry: Registry | undefined;
 
   #cache = new Map<string, Resolution>();
 
@@ -73,7 +73,7 @@ export class Cyrene<TRipples extends DependencyEntries = {}> {
 
   #state: 'configuring' | 'active' | 'disposing' | 'disposed' = 'configuring';
 
-  #disposal?: Promise<void>;
+  #disposal: Promise<void> | undefined;
 
   #ripples: Record<string, unknown> = Object.create(null);
 

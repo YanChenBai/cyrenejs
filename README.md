@@ -16,7 +16,7 @@
   <a href="https://www.npmjs.com/package/cyrenejs"><img src="https://img.shields.io/npm/v/cyrenejs?style=flat&labelColor=18212f&color=a78bfa" alt="npm 版本" /></a>
   <img src="https://img.shields.io/badge/TypeScript-type_safe-3178c6?style=flat&labelColor=18212f" alt="TypeScript 类型推导" />
   <img src="https://img.shields.io/badge/module-ESM-a78bfa?style=flat&labelColor=18212f" alt="ESM 模块" />
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.0.0-5fa777?style=flat&labelColor=18212f" alt="Node.js 22.0.0 及以上" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.6.0-5fa777?style=flat&labelColor=18212f" alt="Node.js 22.6.0 及以上" />
 </p>
 
 <br />
@@ -39,7 +39,7 @@ npm install cyrenejs
 
 也可以使用 `pnpm add cyrenejs` 或 `vp add cyrenejs`
 
-需要 Node.js 22.0.0 及以上, 包提供 ESM 入口和 TypeScript 类型声明
+需要 Node.js 22.6.0 及以上, 包提供 ESM 入口和 TypeScript 类型声明
 下面的 TypeScript 示例使用 `await using`, 请通过支持该语法的运行时或 TypeScript 工具链运行; 也可以使用 `try/finally` 配合 `await app.dispose()` 显式释放资源
 
 ```ts
@@ -200,7 +200,7 @@ users.list();
 import { lazy, ripple } from 'cyrenejs';
 
 const Report = ripple('report', { users: lazy(() => Users) }, ({ users }) => ({
-  run: () => users.resolve().describe(),
+  run: async () => (await users.resolve()).list(),
 }));
 ```
 

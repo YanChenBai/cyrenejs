@@ -20,5 +20,5 @@
   "editor.codeActionsOnSave": {
     "source.fixAll.oxc": "explicit"
   },
-  "cSpell.words": ["changelogen", "voidzero"]
+  "cSpell.words": ["changelogen", "cyrenejs", "oxnode", "vitest", "voidzero"]
 }

@@ -1,11 +1,14 @@
 {
   "name": "@cyrenejs/example",
   "version": "0.0.0",
+  "private": false,
   "description": "A starter for creating a TypeScript package.",
   "license": "MIT",
   "type": "module",
   "devDependencies": {
+    "@oxc-node/cli": "catalog:",
     "@types/node": "catalog:",
+    "cyrenejs": "workspace:*",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"

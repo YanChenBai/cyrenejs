@@ -111,13 +111,8 @@ export default defineConfig({
     ignorePatterns: ['CHANGELOG.md'],
   },
 
-  pack: {
-    entry: ['src/index.ts'],
-    dts: true,
-  },
-
   test: {
-    include: ['tests/**/*.test.ts'],
+    projects: ['packages/*'],
   },
 
   run: {

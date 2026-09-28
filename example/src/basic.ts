@@ -1,4 +1,4 @@
-import { Cyrene, formatGraph, ripple } from '../../src/index.ts';
+import { Cyrene, formatGraph, ripple } from 'cyrenejs';
 
 const write = (message: string) => process.stdout.write(`${message}\n`);
 const Config = ripple('config', () => ({ databaseUrl: 'memory://demo', prefix: 'app' }));

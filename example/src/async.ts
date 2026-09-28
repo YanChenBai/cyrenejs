@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { setTimeout } from 'node:timers/promises';
 
-import { Cyrene, lazy, ripple } from '../../src/index.ts';
+import { Cyrene, lazy, ripple } from 'cyrenejs';
 
 export async function runAsync(): Promise<void> {
   let connections = 0;

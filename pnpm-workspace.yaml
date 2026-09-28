@@ -1,6 +1,7 @@
 catalogMode: prefer
 
 catalog:
+  '@oxc-node/cli': ^0.1.3
   '@stylistic/eslint-plugin': ^5.10.0
   '@types/node': ^24
   '@vitest/coverage-v8': 5.0.1
@@ -33,3 +34,4 @@ peerDependencyRules:
 
 packages:
   - example
+  - packages/*

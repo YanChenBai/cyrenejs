@@ -4,7 +4,8 @@ export default defineConfig({
   run: {
     tasks: {
       start: {
-        command: 'node ./src/index.ts',
+        command: 'oxnode ./src/index.ts',
+        dependsOn: ['cyrenejs#build'],
       },
     },
   },

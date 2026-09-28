@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { Cyrene, ripple } from '../../src/index.ts';
+import { Cyrene, ripple } from 'cyrenejs';
 
 export async function runRegistration(): Promise<void> {
   let released = false;

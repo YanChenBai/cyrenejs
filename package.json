@@ -15,8 +15,7 @@
   },
   "scripts": {
     "prepare": "vp config",
-    "changeset": "changeset",
-    "test-release-notes": "node --experimental-strip-types --test scripts/release-notes.test.ts"
+    "changeset": "changeset"
   },
   "devDependencies": {
     "@changesets/changelog-github": "catalog:",

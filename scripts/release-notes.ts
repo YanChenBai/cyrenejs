@@ -9,18 +9,21 @@ const repositoryUrl = `https://github.com/${repository}`;
 
 type PublishedPackage = { name: string; version: string };
 
+const BREAKING_CATEGORY = '💥 Breaking Changes';
+const OTHER_CATEGORY = '📝 Other Changes';
+
 const categories: Record<string, string> = {
-  feat: 'Features',
-  fix: 'Fixes & Enhancements',
-  perf: 'Performance',
-  refactor: 'Refactoring',
-  docs: 'Docs',
-  test: 'Tests',
-  build: 'Build',
-  ci: 'CI',
-  chore: 'Chore',
-  style: 'Styles',
-  revert: 'Reverts',
+  feat: '✨ Features',
+  fix: '🐛 Fixes & Enhancements',
+  perf: '⚡ Performance',
+  refactor: '♻️ Refactoring',
+  docs: '📚 Docs',
+  test: '🧪 Tests',
+  build: '📦 Build',
+  ci: '👷 CI',
+  chore: '🔧 Chore',
+  style: '🎨 Styles',
+  revert: '⏪ Reverts',
 };
 
 function formatCommit(hash: string, subject: string, body: string) {
@@ -28,8 +31,8 @@ function formatCommit(hash: string, subject: string, body: string) {
   const breaking = Boolean(match?.[3]) || /^BREAKING[ -]CHANGE:\s/m.test(body);
 
   const category = breaking
-    ? 'Breaking Changes'
-    : (categories[match?.[1] ?? ''] ?? 'Other Changes');
+    ? BREAKING_CATEGORY
+    : (categories[match?.[1] ?? ''] ?? OTHER_CATEGORY);
 
   const summary = match?.[4] ?? subject;
   const scope = match?.[2] ? `**${match[2]}:** ` : '';
@@ -59,7 +62,7 @@ export function formatCommits(log: string) {
   }
 
   return (
-    ['Breaking Changes', ...Object.values(categories), 'Other Changes']
+    [BREAKING_CATEGORY, ...Object.values(categories), OTHER_CATEGORY]
       .filter(category => groups.has(category))
       .map(category => `### ${category}\n\n${groups.get(category)!.join('\n')}`)
       .join('\n\n') || 'No package-specific commits in this release.'

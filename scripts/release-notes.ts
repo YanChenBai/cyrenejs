@@ -30,9 +30,7 @@ function formatCommit(hash: string, subject: string, body: string) {
   const match = /^(\w+)(?:\(([^)]+)\))?(!)?:\s+(.+)$/.exec(subject);
   const breaking = Boolean(match?.[3]) || /^BREAKING[ -]CHANGE:\s/m.test(body);
 
-  const category = breaking
-    ? BREAKING_CATEGORY
-    : (categories[match?.[1] ?? ''] ?? OTHER_CATEGORY);
+  const category = breaking ? BREAKING_CATEGORY : (categories[match?.[1] ?? ''] ?? OTHER_CATEGORY);
 
   const summary = match?.[4] ?? subject;
   const scope = match?.[2] ? `**${match[2]}:** ` : '';

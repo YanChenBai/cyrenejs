@@ -1,0 +1,45 @@
+{
+  "name": "@cyrenejs/elysia",
+  "version": "0.0.0",
+  "description": "Type-safe Cyrene dependency injection for Elysia with lazy resolution and resource disposal",
+  "homepage": "https://github.com/YanChenBai/cyrenejs#readme",
+  "bugs": {
+    "url": "https://github.com/YanChenBai/cyrenejs/issues"
+  },
+  "license": "MIT",
+  "author": "byc <bycrxemail@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YanChenBai/cyrenejs.git",
+    "directory": "packages/elysia"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "check": "vp check",
+    "prepublishOnly": "vp run build"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "cyrenejs": "workspace:~",
+    "elysia": "^1.4.0"
+  }
+}

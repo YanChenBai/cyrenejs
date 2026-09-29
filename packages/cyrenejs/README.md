@@ -1,10 +1,6 @@
 <h1 align="center">Cyrene</h1>
 
 <p align="center">
-  让依赖关系留在代码里, 让初始化与释放交给运行时
-</p>
-
-<p align="center">
   <a href="#quick-start">快速开始</a> ·
   <a href="#features">能力一览</a> ·
   <a href="#agent">Agent</a> ·

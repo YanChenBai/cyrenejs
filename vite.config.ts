@@ -127,7 +127,11 @@ export default defineConfig({
         cache: false,
       },
       'release-notes': {
-        command: 'node --experimental-strip-types scripts/release-notes.ts',
+        command: 'oxnode scripts/release-notes.ts',
+        cache: false,
+      },
+      'release-pr': {
+        command: 'oxnode scripts/release-pr.ts',
         cache: false,
       },
     },

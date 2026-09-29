@@ -1,8 +1,8 @@
-import { defineConfig } from "vite-plus";
+import { defineConfig } from 'vite-plus';
 
 export default defineConfig({
   staged: {
-    "*": "vp check --fix",
+    '*': 'vp check --fix',
   },
 
   fmt: {
@@ -10,128 +10,128 @@ export default defineConfig({
     sortImports: true,
     sortTailwindcss: true,
     sortPackageJson: true,
-    arrowParens: "avoid",
-    embeddedLanguageFormatting: "auto",
+    arrowParens: 'avoid',
+    embeddedLanguageFormatting: 'auto',
     printWidth: 100,
-    ignorePatterns: ["CHANGELOG.md", ".changeset/**"],
+    ignorePatterns: ['CHANGELOG.md', '.changeset/**'],
   },
 
   lint: {
     jsPlugins: [
       {
-        name: "vite-plus",
-        specifier: "vite-plus/oxlint-plugin",
+        name: 'vite-plus',
+        specifier: 'vite-plus/oxlint-plugin',
       },
       {
-        name: "stylistic",
-        specifier: "@stylistic/eslint-plugin",
+        name: 'stylistic',
+        specifier: '@stylistic/eslint-plugin',
       },
     ],
     rules: {
-      "vite-plus/prefer-vite-plus-imports": "error",
-      "typescript/switch-exhaustiveness-check": "error",
-      "typescript/consistent-type-imports": "error",
-      "unicorn/switch-case-braces": "error",
-      "default-case-last": "allow",
-      "no-return-assign": "error",
-      "no-implicit-coercion": "error",
-      "prefer-template": "error",
-      "prefer-const": "error",
-      "no-sequences": "error",
-      "no-console": [
-        "error",
+      'vite-plus/prefer-vite-plus-imports': 'error',
+      'typescript/switch-exhaustiveness-check': 'error',
+      'typescript/consistent-type-imports': 'error',
+      'unicorn/switch-case-braces': 'error',
+      'default-case-last': 'allow',
+      'no-return-assign': 'error',
+      'no-implicit-coercion': 'error',
+      'prefer-template': 'error',
+      'prefer-const': 'error',
+      'no-sequences': 'error',
+      'no-console': [
+        'error',
         {
-          allow: ["warn", "error"],
+          allow: ['warn', 'error'],
         },
       ],
 
-      curly: "error",
+      curly: 'error',
 
       // return 后不要再套 else
-      "no-else-return": "error",
+      'no-else-return': 'error',
 
       // 避免 else { if (...) }
-      "no-lonely-if": "error",
+      'no-lonely-if': 'error',
 
       // 禁止嵌套三元
-      "no-nested-ternary": "error",
+      'no-nested-ternary': 'error',
 
       // 去掉无意义三元
-      "no-unneeded-ternary": "error",
+      'no-unneeded-ternary': 'error',
 
       // 最大块嵌套层级
-      "max-depth": ["error", { max: 4 }],
+      'max-depth': ['error', { max: 4 }],
 
       // 圈复杂度
-      complexity: ["error", { max: 12 }],
+      complexity: ['error', { max: 12 }],
 
       // foo(bar(baz(qux()))) 这种调用嵌套
-      "unicorn/max-nested-calls": ["error", { max: 3 }],
+      'unicorn/max-nested-calls': ['error', { max: 3 }],
 
-      "stylistic/padding-line-between-statements": [
-        "error",
+      'stylistic/padding-line-between-statements': [
+        'error',
         {
-          blankLine: "always",
-          prev: "*",
-          next: "block-like",
+          blankLine: 'always',
+          prev: '*',
+          next: 'block-like',
         },
         {
-          blankLine: "always",
-          prev: "block-like",
-          next: "*",
+          blankLine: 'always',
+          prev: 'block-like',
+          next: '*',
         },
         {
-          blankLine: "always",
-          prev: "*",
-          next: ["multiline-const", "multiline-let", "multiline-var"],
+          blankLine: 'always',
+          prev: '*',
+          next: ['multiline-const', 'multiline-let', 'multiline-var'],
         },
 
         {
-          blankLine: "always",
-          prev: ["multiline-const", "multiline-let", "multiline-var"],
-          next: "*",
+          blankLine: 'always',
+          prev: ['multiline-const', 'multiline-let', 'multiline-var'],
+          next: '*',
         },
         {
-          blankLine: "always",
-          prev: "*",
-          next: "return",
+          blankLine: 'always',
+          prev: '*',
+          next: 'return',
         },
         {
-          blankLine: "always",
-          prev: ["interface", "type", "enum"],
-          next: ["interface", "type", "enum"],
+          blankLine: 'always',
+          prev: ['interface', 'type', 'enum'],
+          next: ['interface', 'type', 'enum'],
         },
       ],
-      "stylistic/lines-between-class-members": ["error", "always"],
+      'stylistic/lines-between-class-members': ['error', 'always'],
     },
     options: {
       typeAware: true,
       typeCheck: true,
     },
-    ignorePatterns: ["CHANGELOG.md", ".changeset/**"],
+    ignorePatterns: ['CHANGELOG.md', '.changeset/**'],
   },
 
   test: {
-    projects: ["packages/*", "scripts"],
+    projects: ['packages/*', 'scripts'],
   },
 
   run: {
     cache: true,
     tasks: {
-      "version-packages": {
-        command: "changeset version && vp install --lockfile-only",
+      'version-packages': {
+        command: 'changeset version && vp install --lockfile-only',
         cache: false,
       },
       release: {
-        command: "vp run -r build && changeset publish",
+        command: 'vp run -r build && changeset publish',
         cache: false,
       },
-      "release-notes": {
-        command: "oxnode scripts/release-notes.ts",
+      'release-notes': {
+        command: 'oxnode scripts/release-notes.ts',
         cache: false,
       },
-      "release-pr": {
-        command: "oxnode scripts/release-pr.ts",
+      'release-pr': {
+        command: 'oxnode scripts/release-pr.ts',
         cache: false,
       },
     },

@@ -117,5 +117,19 @@ export default defineConfig({
 
   run: {
     cache: true,
+    tasks: {
+      'version-packages': {
+        command: 'changeset version && vp install --lockfile-only',
+        cache: false,
+      },
+      release: {
+        command: 'vp run -r build && changeset publish',
+        cache: false,
+      },
+      'release-notes': {
+        command: 'node --experimental-strip-types scripts/release-notes.ts',
+        cache: false,
+      },
+    },
   },
 });

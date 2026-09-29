@@ -39,11 +39,9 @@
   "scripts": {
     "build": "vp pack",
     "prepublishOnly": "vpr build",
-    "ready": "vp check && vp test run && vpr build",
-    "release": "vp check && vp test && vpr build && changelogen --release"
+    "ready": "vp check && vp test run && vpr build"
   },
   "devDependencies": {
-    "changelogen": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"

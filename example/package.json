@@ -1,7 +1,7 @@
 {
   "name": "@cyrenejs/example",
   "version": "0.0.0",
-  "private": false,
+  "private": true,
   "description": "A starter for creating a TypeScript package.",
   "license": "MIT",
   "type": "module",

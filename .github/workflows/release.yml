@@ -1,49 +1,94 @@
 name: Release
 
-permissions:
-  contents: write
-  id-token: write
-
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - master
 
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      published-packages: ${{ steps.changesets.outputs.published-packages }}
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1.19.0
+        with:
+          node-version: '24'
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Build packages
+        run: vp run -r build
 
       - name: Check
         run: vp check
 
       - name: Test
-        run: vp test
+        run: vp test run
 
-      - name: Build
-        run: vp pack
+      - name: Test release notes
+        run: vp run test-release-notes
 
-      - name: Publish to npm
-        run: vp pm publish --access public --provenance --no-git-checks
-
-      - name: Publish GitHub Release
+      - name: Create Release PR or publish to npm
+        id: changesets
+        uses: changesets/action@v2
+        with:
+          version-script: vp run version-packages
+          publish-script: vp run release
+          commit-message: 'chore: version packages'
+          pr-title: 'chore: release packages'
+          create-github-releases: true
         env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          gh release create "$TAG" \
-            --verify-tag \
-            --title "$TAG" \
-            --notes "For details, please refer to [CHANGELOG.md](https://github.com/${GH_REPO}/blob/master/CHANGELOG.md)."
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+
+  release-notes:
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout release commit and tags
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1.19.0
+        with:
+          node-version: '24'
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Generate GitHub release notes from commits
+        run: vp run release-notes --publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISHED_PACKAGES: ${{ needs.release.outputs.published-packages }}

@@ -14,11 +14,17 @@
     "url": "https://github.com/YanChenBai/cyrenejs.git"
   },
   "scripts": {
-    "prepare": "vp config"
+    "prepare": "vp config",
+    "changeset": "changeset",
+    "test-release-notes": "node --experimental-strip-types --test scripts/release-notes.test.ts"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "catalog:",
+    "@changesets/cli": "catalog:",
     "@stylistic/eslint-plugin": "catalog:",
+    "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
+    "pkg-pr-new": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
